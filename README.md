@@ -2,7 +2,7 @@
 
 Publish 1–10 Markdown files from the currently loaded assistant response in a ChatGPT Project conversation to Google Drive-backed Project Sources.
 
-> **Status: PRE-RELEASE.** Microsoft Edge Add-ons is the first intended store channel. There is not yet a supported public install link. The Edge Store listing is not public, GitHub Public Beta is not live, and Chrome Web Store support is planned later.
+> **Status: GITHUB PUBLIC BETA / EDGE PRE-RELEASE.** The public source repository is live at [github.com/bevis7781/project-source-publisher](https://github.com/bevis7781/project-source-publisher). Microsoft Edge Add-ons remains the first intended store channel, but its listing is not public yet and there is no supported public install link. This is still a beta, pre-store distribution; loading an arbitrary Git clone is not a supported OAuth installation path. Chrome Web Store support is planned later.
 
 ## Why
 
@@ -29,7 +29,7 @@ Moving generated Markdown into Project Sources can require downloading files, wr
 - A first Add may save the file to Drive while PSP cannot confirm completion from observable ChatGPT state. **Saved to Drive · confirmation unavailable** is a known limitation, not proof of failure; Published remains withheld until confirmation is available.
 - PSP is not a general Source Manager. It does not automatically add new filenames or perform rename, delete, merge, split, or arbitrary-upload operations.
 - ChatGPT interface changes may affect the workflow. Google Drive, a supported Microsoft Edge browser, and an authenticated ChatGPT session are required.
-- This source tree is not a supported public installation package. Loading source code unpacked should not be expected to make Google OAuth work.
+- This source tree is not a supported public installation package. Loading an arbitrary Git clone unpacked is not a supported OAuth installation path and should not be expected to make Google OAuth work.
 
 ## Privacy and permissions
 
@@ -42,9 +42,9 @@ See [Privacy Policy](PRIVACY.md), [Security Policy](SECURITY.md), and [MIT Licen
 
 ## Release status
 
-**PRE-RELEASE**
+**GITHUB PUBLIC BETA / EDGE PRE-RELEASE**
 
-Microsoft Edge Add-ons is the first intended store channel, but the store listing is not yet public and no supported public install link is available. GitHub Public Beta has not launched. Chrome Web Store distribution is planned later. External publication has not occurred.
+GitHub Public Beta is live at [github.com/bevis7781/project-source-publisher](https://github.com/bevis7781/project-source-publisher). Microsoft Edge Add-ons is the first intended store channel, but the store listing is not yet public and no supported public install link is available. This local Edge ZIP is not publicly downloadable, and no GitHub Release exists. Chrome Web Store distribution is planned later; this status does not claim acceptance by either store.
 
 ## License
 

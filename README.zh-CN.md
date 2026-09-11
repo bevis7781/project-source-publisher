@@ -2,7 +2,7 @@
 
 将 ChatGPT Project 会话中当前已加载的 assistant 回复里的 1–10 个 Markdown 文件，发布到由 Google Drive 支持的 Project Sources。
 
-> **状态：PRE-RELEASE（预发布）。** Microsoft Edge Add-ons 是首个计划使用的商店渠道。目前还没有受支持的公开安装链接；Edge 商店列表尚未公开，GitHub Public Beta 尚未上线，Chrome Web Store 计划后续支持。
+> **状态：GITHUB PUBLIC BETA / EDGE PRE-RELEASE（GitHub 公开 Beta / Edge 预发布）。** 公开源码仓库已上线：[github.com/bevis7781/project-source-publisher](https://github.com/bevis7781/project-source-publisher)。Microsoft Edge Add-ons 仍是首个计划使用的商店渠道，但商店列表尚未公开，目前没有受支持的公开安装链接。项目仍处于 Beta、商店前分发阶段；直接加载任意 Git clone 不是受支持的 OAuth 安装路径。Chrome Web Store 计划后续支持。
 
 ## 为什么需要它
 
@@ -29,7 +29,7 @@
 - 首次 Add 可能已经把文件保存到 Drive，但 PSP 无法从可观察的 ChatGPT 状态确认完成。**已保存到 Drive · 暂时无法确认**是已知限制，不代表失败；得到确认前不会显示已发布。
 - PSP 不是通用 Source Manager，不会自动添加新文件名，也不执行重命名、删除、合并、拆分或任意上传管理。
 - ChatGPT 界面变化可能影响流程；需要 Google Drive、受支持的 Microsoft Edge 浏览器和已登录的 ChatGPT 会话。
-- 这份源码不是受支持的公开安装包。不要期待直接加载源码目录就能使 Google OAuth 可用。
+- 这份源码不是受支持的公开安装包。直接加载任意 Git clone 不是受支持的 OAuth 安装路径，不应期待这样就能使 Google OAuth 可用。
 
 ## 隐私与权限
 
@@ -42,9 +42,9 @@
 
 ## 发布状态
 
-**PRE-RELEASE（预发布）**
+**GITHUB PUBLIC BETA / EDGE PRE-RELEASE（GitHub 公开 Beta / Edge 预发布）**
 
-Microsoft Edge Add-ons 是首个计划使用的商店渠道，但商店列表尚未公开，目前没有受支持的公开安装链接。GitHub Public Beta 尚未上线。Chrome Web Store 计划后续发布。尚未进行外部公开发布。
+GitHub Public Beta 已在 [github.com/bevis7781/project-source-publisher](https://github.com/bevis7781/project-source-publisher) 上线。Microsoft Edge Add-ons 是首个计划使用的商店渠道，但商店列表尚未公开，目前没有受支持的公开安装链接。本地 Edge ZIP 不会作为公开下载提供，也没有 GitHub Release。Chrome Web Store 计划后续支持；以上状态不代表任一商店已审核通过。
 
 ## 许可证
 
