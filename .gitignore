@@ -1,0 +1,11 @@
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.har
+*.saz
+dist/
+.vscode/
+.idea/
+*.tmp.png
+demo-raw/

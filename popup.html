@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>Project Source Publisher</title>
+</head>
+<body>
+  <header class="hd">
+    <div class="hd-brand">
+      <svg class="hd-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M7.5 8.5h9v11a1.5 1.5 0 0 1-1.5 1.5H9a1.5 1.5 0 0 1-1.5-1.5z"
+              fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        <path d="M12 13.5V3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        <path d="M9.4 6.2 12 3.6l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.7"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <h1 id="app-title" class="hd-title"></h1>
+    </div>
+    <div id="lang-switch" class="lang" role="group">
+      <button id="lang-en" class="lang-btn" type="button"></button>
+      <span class="lang-sep" aria-hidden="true"></span>
+      <button id="lang-zh" class="lang-btn" type="button"></button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero: artifact identity (name/count + sub) or fail-closed guidance -->
+    <section class="hero" id="hero">
+      <div class="hero-name" id="hero-name-row" hidden>
+        <svg class="doc-glyph" id="hero-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M7 3.5h7l4 4V20.5H7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          <path d="M14 3.5v4h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        </svg>
+        <span id="state-filename"></span>
+      </div>
+      <div id="state-sub" class="hero-sub" hidden></div>
+      <div id="state-guidance" class="hero-guidance" hidden></div>
+    </section>
+
+    <!-- Action zone: fixed 44px slot. Publish / Continue / Live / Receipt faces
+         share one geometry; only the active face is visible and focusable. -->
+    <div class="action-zone" id="action-zone">
+      <button id="publish" class="btn btn-primary az-face" hidden type="button"></button>
+      <button id="continue-connection" class="btn btn-primary az-face" hidden type="button"></button>
+      <div id="live-surface" class="live-surface az-face" hidden>
+        <svg class="spin" id="live-spin" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6"/></svg>
+        <svg class="check" id="live-check" viewBox="0 0 16 16" aria-hidden="true" focusable="false" hidden><path d="M3.2 8.6 6.6 12 12.8 4.6"/></svg>
+        <span id="live-label"></span>
+      </div>
+      <div id="receipt-surface" class="receipt-surface az-face" hidden>
+        <svg class="check draw" id="receipt-check" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.2 8.6 6.6 12 12.8 4.6"/></svg>
+        <span class="dots" id="receipt-dots" aria-hidden="true" hidden><i></i><i></i><i></i></span>
+        <span id="receipt-label"></span>
+      </div>
+    </div>
+
+    <!-- Flow strip: hairline progress + status line. Track stays reserved
+         (opacity 0) outside running states so Ready→Running→Published keeps
+         the popup height stable. -->
+    <div class="flow" id="flow">
+      <div class="flow-track" aria-hidden="true"><div class="flow-fill" id="flow-fill"></div></div>
+      <div id="publish-status" class="flow-status" role="status" aria-live="polite">
+        <span id="status-lead" class="lead"></span>
+        <span class="dots" id="status-dots" aria-hidden="true" hidden><i></i><i></i><i></i></span>
+        <span id="status-second" class="second" hidden></span>
+      </div>
+    </div>
+
+    <!-- Multi-source per-file progress (no card, no table frame) -->
+    <section id="source-progress-view" class="progress" hidden>
+      <div class="progress-head">
+        <span id="source-progress-title" class="progress-title"></span>
+        <span id="source-progress-count" class="progress-count"></span>
+      </div>
+      <ol id="source-progress-list" class="plist" aria-live="polite"></ol>
+    </section>
+
+    <!-- Onboarding fallback: visibly tertiary, never a setup step -->
+    <div id="fallback-row" class="fallback-row" hidden>
+      <span id="fallback-note"></span>
+      <button id="copy-drive-link" class="text-btn" type="button"></button>
+    </div>
+
+    <!-- Discovery line: one quiet row; the evidence boundary lives behind
+         the info affordance (progressive disclosure). -->
+    <div id="discovery-view" class="discovery" hidden>
+      <span id="discovery-summary" class="d-sum"></span>
+      <span class="d-sep" id="discovery-sep" aria-hidden="true">·</span>
+      <button id="rescan" class="d-rescan" type="button"></button>
+      <button id="info-dot" class="info-dot" type="button" aria-expanded="false">i</button>
+      <div id="discovery-boundary" class="info-pop" role="tooltip"></div>
+    </div>
+  </main>
+
+  <footer class="ft">
+    <div id="global-status" class="gstatus" role="status" aria-live="polite"></div>
+    <div id="last-published" class="lastpub"></div>
+  </footer>
+  <script src="popup.js"></script>
+</body>
+</html>

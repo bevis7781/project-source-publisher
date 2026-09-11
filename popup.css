@@ -1,0 +1,529 @@
+/* ==========================================================================
+   Project Source Publisher — popup styles
+   Design language: "Quiet Ink" (K3 v1, frozen).
+   Quiet, restrained, weightless; motion exists only to say "the system is
+   alive". System fonts only, no remote assets, no frameworks.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Design tokens (light)
+   -------------------------------------------------------------------------- */
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --fg: #1b1c1f;
+  --muted: #5f6670;
+  --faint: #8b939d;
+  --border: #e4e7eb;
+  --border-strong: #ccd2d9;
+  --surface: #f6f7f9;
+  --surface-raise: #edeff2;
+  --ink: #1b1c1f;             /* primary action surface (ink, not blue) */
+  --ink-hover: #3a3c41;
+  --ink-pressed: #000000;
+  --ink-fg: #ffffff;
+  --live: #a16207;            /* working / in-progress signal (quiet amber) */
+  --live-soft: rgba(161, 98, 7, 0.10);
+  --ok: #2e7d4f;              /* restrained green */
+  --ok-soft: rgba(46, 125, 79, 0.10);
+  --error: #b3261e;
+  --error-soft: rgba(179, 38, 30, 0.07);
+  --focus-ring: rgba(27, 28, 31, 0.35);
+  --shadow-pop: 0 6px 20px rgba(20, 22, 26, 0.10), 0 1px 4px rgba(20, 22, 26, 0.08);
+
+  /* type scale */
+  --t-hero: 15px;
+  --t-body: 13px;
+  --t-sub: 12px;
+  --t-meta: 11.5px;
+
+  /* spacing (4px base) */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px;
+
+  /* radius */
+  --r-sm: 6px; --r-md: 9px;
+
+  /* motion */
+  --dur-instant: 120ms;
+  --dur-fast: 180ms;
+  --dur-normal: 260ms;
+  --ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-enter: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Dark tokens: real Chrome popups follow prefers-color-scheme; the
+   :root[data-theme] block exists so the render harness can force a theme
+   for visual verification without touching the media query. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #191b1f;
+    --fg: #e9ebef;
+    --muted: #9aa2ac;
+    --faint: #6f7883;
+    --border: #2c313a;
+    --border-strong: #3b424d;
+    --surface: #21252c;
+    --surface-raise: #282d36;
+    --ink: #eceef2;           /* primary action flips to light ink */
+    --ink-hover: #ffffff;
+    --ink-pressed: #d7dade;
+    --ink-fg: #17181b;
+    --live: #e0a83c;
+    --live-soft: rgba(224, 168, 60, 0.13);
+    --ok: #6fbf8f;
+    --ok-soft: rgba(111, 191, 143, 0.12);
+    --error: #e26d65;
+    --error-soft: rgba(226, 109, 101, 0.11);
+    --focus-ring: rgba(233, 235, 239, 0.4);
+    --shadow-pop: 0 6px 20px rgba(0, 0, 0, 0.45), 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #191b1f;
+  --fg: #e9ebef;
+  --muted: #9aa2ac;
+  --faint: #6f7883;
+  --border: #2c313a;
+  --border-strong: #3b424d;
+  --surface: #21252c;
+  --surface-raise: #282d36;
+  --ink: #eceef2;
+  --ink-hover: #ffffff;
+  --ink-pressed: #d7dade;
+  --ink-fg: #17181b;
+  --live: #e0a83c;
+  --live-soft: rgba(224, 168, 60, 0.13);
+  --ok: #6fbf8f;
+  --ok-soft: rgba(111, 191, 143, 0.12);
+  --error: #e26d65;
+  --error-soft: rgba(226, 109, 101, 0.11);
+  --focus-ring: rgba(233, 235, 239, 0.4);
+  --shadow-pop: 0 6px 20px rgba(0, 0, 0, 0.45), 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* --------------------------------------------------------------------------
+   2. Popup surface (380px)
+   -------------------------------------------------------------------------- */
+* { box-sizing: border-box; }
+
+/* [hidden] must always win over any display rule below (flex/grid faces). */
+[hidden] { display: none !important; }
+
+body {
+  width: 380px;
+  margin: 0;
+  padding: var(--s4) var(--s4) var(--s3);
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--t-body)/1.55 system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* --------------------------------------------------------------------------
+   3. Header — brand + language switch. No subtitle, no divider line.
+   -------------------------------------------------------------------------- */
+.hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding-bottom: var(--s3);
+}
+.hd-brand { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.hd-mark { width: 17px; height: 17px; color: var(--fg); flex: none; opacity: 0.9; }
+.hd-title { margin: 0; font-size: var(--t-body); font-weight: 650; letter-spacing: 0.005em; }
+
+.lang { display: flex; align-items: center; gap: 2px; flex: none; }
+.lang-btn {
+  border: none;
+  background: none;
+  color: var(--faint);
+  font: inherit;
+  font-size: var(--t-meta);
+  padding: 2px 5px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.lang-btn:hover { color: var(--fg); }
+.lang-btn[aria-pressed="true"] { color: var(--fg); font-weight: 650; }
+.lang-sep { width: 1px; height: 10px; background: var(--border-strong); margin: 0 2px; }
+
+/* --------------------------------------------------------------------------
+   4. Hero — artifact identity or state guidance (min-height reserved)
+   -------------------------------------------------------------------------- */
+.hero {
+  min-height: 46px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: var(--s1) 0;
+}
+.hero-name {
+  font-size: var(--t-hero);
+  font-weight: 650;
+  letter-spacing: 0.003em;
+  overflow-wrap: anywhere;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.hero-name .doc-glyph {
+  width: 14px; height: 14px;
+  color: var(--faint);
+  flex: none;
+  align-self: center;
+}
+.hero-sub { font-size: var(--t-sub); color: var(--muted); }
+.hero-guidance { font-size: var(--t-body); color: var(--fg); line-height: 1.5; }
+
+/* --------------------------------------------------------------------------
+   5. Action zone — fixed 44px. One face at a time: Publish / Continue /
+   Live surface / Receipt surface. Faces crossfade (+3px rise) via .on.
+   -------------------------------------------------------------------------- */
+.action-zone {
+  height: 44px;
+  margin-top: var(--s2);
+  position: relative;
+}
+
+.btn {
+  font: inherit;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.btn-primary {
+  width: 100%;
+  height: 44px;
+  background: var(--ink);
+  color: var(--ink-fg);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background-color var(--dur-fast) var(--ease-standard),
+              transform var(--dur-instant) var(--ease-standard);
+}
+.btn-primary:hover:not(:disabled) { background: var(--ink-hover); }
+.btn-primary:active:not(:disabled) { background: var(--ink-pressed); transform: scale(0.99); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn:focus-visible,
+.lang-btn:focus-visible,
+.info-dot:focus-visible,
+.text-btn:focus-visible,
+.d-rescan:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Live surface — the button's running face, same 44px geometry. */
+.live-surface {
+  width: 100%;
+  height: 44px;
+  border-radius: var(--r-md);
+  background: var(--live-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--fg);
+  font-size: var(--t-body);
+  font-weight: 550;
+}
+/* Receipt surface — Published / neutral terminal face. */
+.receipt-surface {
+  width: 100%;
+  height: 44px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: var(--t-body);
+  font-weight: 600;
+}
+.receipt-surface.ok { background: var(--ok-soft); color: var(--ok); }
+.receipt-surface.neutral { background: var(--surface); color: var(--muted); font-weight: 550; }
+
+/* Face crossfade (the morph) */
+.az-face {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity var(--dur-normal) var(--ease-standard),
+              transform var(--dur-normal) var(--ease-standard);
+  pointer-events: none;
+}
+.az-face.on { opacity: 1; transform: none; pointer-events: auto; }
+
+/* --------------------------------------------------------------------------
+   6. Flow strip — hairline progress + status line (height reserved)
+   -------------------------------------------------------------------------- */
+.flow { margin-top: var(--s2); }
+.flow-track {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--surface-raise);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity var(--dur-normal) var(--ease-standard);
+}
+.flow.live .flow-track { opacity: 1; }
+.flow-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 1px;
+  background: var(--live);
+  transition: width 700ms var(--ease-standard),
+              background-color var(--dur-normal) var(--ease-standard);
+}
+.flow.done .flow-fill { background: var(--ok); }
+.flow.indet .flow-fill {
+  width: 34%;
+  transition: none;
+  animation: flow-slide 1.15s var(--ease-standard) infinite;
+}
+@keyframes flow-slide {
+  0%   { margin-left: -34%; }
+  100% { margin-left: 100%; }
+}
+
+.flow-status {
+  min-height: 20px;
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 1px;
+  gap: 7px;
+  font-size: var(--t-sub);
+  color: var(--muted);
+}
+.flow-status .lead { color: var(--fg); font-weight: 550; }
+.flow-status.error .lead { color: var(--error); }
+.flow-status.neutral .lead { color: var(--muted); font-weight: 550; }
+.flow-status .second { flex-basis: 100%; color: var(--muted); }
+
+/* --------------------------------------------------------------------------
+   7. Motion primitives — spinner, breathing dots, check draw-on
+   -------------------------------------------------------------------------- */
+.spin { width: 14px; height: 14px; flex: none; animation: spin-rot 0.9s linear infinite; }
+.spin circle {
+  fill: none;
+  stroke: var(--live);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 32 12;
+}
+@keyframes spin-rot { to { transform: rotate(360deg); } }
+
+.dots { display: inline-flex; gap: 4px; align-items: center; }
+.dots i {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--live);
+  animation: dot-breathe 1.2s var(--ease-standard) infinite;
+}
+.dots i:nth-child(2) { animation-delay: 0.15s; }
+.dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dot-breathe {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  40%      { opacity: 1;    transform: translateY(-2px); }
+}
+
+.check { width: 16px; height: 16px; flex: none; }
+.check path,
+.pglyph .g-check path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 20;
+  stroke-dashoffset: 0;
+}
+.check.draw path { animation: check-draw var(--dur-normal) var(--ease-enter) forwards; }
+@keyframes check-draw { from { stroke-dashoffset: 20; } to { stroke-dashoffset: 0; } }
+
+/* --------------------------------------------------------------------------
+   8. Multi-source progress list — lifecycle glyphs, hairline separators
+   -------------------------------------------------------------------------- */
+.progress { margin-top: var(--s3); }
+.progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  margin-bottom: 2px;
+}
+.progress-title { font-size: var(--t-sub); font-weight: 650; }
+.progress-count { font-size: var(--t-meta); color: var(--faint); }
+
+.plist { list-style: none; margin: 0; padding: 0; }
+.pitem {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: var(--t-sub);
+}
+.pitem + .pitem { border-top: 1px solid var(--border); }
+.pname { overflow-wrap: anywhere; color: var(--fg); }
+.pitem.dim .pname { color: var(--muted); }
+.pstat { color: var(--muted); text-align: right; font-size: var(--t-meta); white-space: nowrap; }
+.pstat.ok { color: var(--ok); font-weight: 600; }
+.pstat.error { color: var(--error); font-weight: 600; }
+.pstat.live { color: var(--live); font-weight: 600; }
+
+/* lifecycle glyph: 16px slot, one shape per stage */
+.pglyph { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
+.pglyph .g-queued {
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+}
+.pglyph .g-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--live);
+  animation: dot-breathe 1.2s var(--ease-standard) infinite;
+}
+.pglyph .g-check { width: 14px; height: 14px; color: var(--ok); }
+.pglyph .g-fail { width: 7px; height: 7px; border-radius: 50%; background: var(--error); }
+.pglyph .g-pause {
+  width: 8px; height: 9px; color: var(--live);
+  border-left: 2.5px solid currentColor; border-right: 2.5px solid currentColor;
+}
+.pglyph .g-half {
+  width: 8px; height: 8px; border-radius: 50%;
+  border: 1.5px solid var(--live);
+  border-top-color: transparent;
+  animation: spin-rot 0.9s linear infinite;
+}
+
+/* --------------------------------------------------------------------------
+   9. Discovery line — one quiet row, boundary behind the info affordance
+   -------------------------------------------------------------------------- */
+.discovery {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-sub);
+  color: var(--muted);
+  position: relative;
+}
+.discovery .d-sum { min-width: 0; overflow-wrap: anywhere; }
+.discovery .d-sep { color: var(--faint); }
+.discovery .d-rescan {
+  border: none; background: none; padding: 1px 2px;
+  font: inherit; font-size: var(--t-sub); color: var(--muted);
+  cursor: pointer; border-radius: var(--r-sm);
+}
+.discovery .d-rescan:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+.discovery .d-rescan:disabled { color: var(--faint); cursor: default; text-decoration: none; }
+
+.info-dot {
+  margin-left: auto;
+  flex: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: none;
+  color: var(--faint);
+  font-size: 10px;
+  font-style: normal;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: help;
+  padding: 0;
+}
+.info-dot:hover, .info-dot[aria-expanded="true"] { color: var(--fg); border-color: var(--muted); }
+
+.info-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: 300px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  padding: 8px 10px;
+  font-size: var(--t-sub);
+  line-height: 1.5;
+  color: var(--muted);
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity var(--dur-fast) var(--ease-standard),
+              transform var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+  z-index: 5;
+}
+.info-pop.on { opacity: 1; transform: none; pointer-events: auto; }
+
+/* --------------------------------------------------------------------------
+   10. Fallback row (Copy Drive link) — visibly tertiary, separated
+   -------------------------------------------------------------------------- */
+.fallback-row {
+  margin-top: var(--s2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-meta);
+  color: var(--faint);
+}
+.text-btn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--t-sub);
+  padding: 2px 2px;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.text-btn:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+
+/* --------------------------------------------------------------------------
+   11. Footer — transient global status + last published
+   -------------------------------------------------------------------------- */
+.ft {
+  margin-top: var(--s3);
+  min-height: 18px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.gstatus {
+  font-size: var(--t-meta);
+  color: var(--muted);
+  min-width: 0;
+  transition: opacity var(--dur-normal) var(--ease-standard);
+}
+.gstatus.error { color: var(--error); }
+.gstatus.fade { opacity: 0; }
+.lastpub { font-size: var(--t-meta); color: var(--faint); white-space: nowrap; }
+
+/* --------------------------------------------------------------------------
+   12. Reduced motion — spinner/dots/slider stop; transitions drop to 1ms;
+   checks render whole. Meaning survives via text + color + static glyphs.
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .spin,
+  .dots i,
+  .pglyph .g-dot,
+  .pglyph .g-half,
+  .flow.indet .flow-fill { animation: none; }
+  .flow.indet .flow-fill { margin-left: 33%; }
+  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+  .check.draw path,
+  .pglyph .g-check path { animation: none; stroke-dashoffset: 0; }
+}
