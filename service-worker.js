@@ -1328,6 +1328,55 @@ async function project100MvpCreateCanonicalFile(filename) {
   };
 }
 
+// Resolve a pending create by the reserved Drive identity. A direct 404 is
+// the only absence proof used here; auth, transport and other HTTP failures
+// stay unresolved so the durable intent cannot be cleared accidentally.
+async function project100MvpReadSourceFileById(filename, projectId, driveFileId) {
+  const wantedFilename = project100MvpNormalizeLogicalFilename(filename);
+  const wantedProjectId = String(projectId || "");
+  if (!wantedProjectId) {
+    throw new Error("RECOVERY_IDENTITY_MISMATCH");
+  }
+  const reservedId = project100MvpNormalizeDriveFileId(driveFileId);
+  const response = await project100MvpFetchWithToken(
+    `${PROJECT100_MVP_DRIVE_API}/files/${encodeURIComponent(reservedId)}?fields=id,name,mimeType,trashed,webViewLink,appProperties`,
+    {
+      method: "GET",
+      cache: "no-store"
+    },
+    false
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  const metadata = await project100MvpParseJsonResponse(
+    response, "DRIVE_SOURCE_IDENTITY_READ_FAILED");
+  if (metadata.id !== reservedId) {
+    throw new Error("DRIVE_ID_MISMATCH");
+  }
+  if (metadata.name !== wantedFilename) {
+    throw new Error("DRIVE_SOURCE_IDENTITY_MISMATCH");
+  }
+  if (metadata.trashed !== false || metadata.mimeType !== "text/markdown") {
+    throw new Error("DRIVE_SOURCE_IDENTITY_MISMATCH");
+  }
+  const appProperties = metadata.appProperties && typeof metadata.appProperties === "object"
+    ? metadata.appProperties
+    : null;
+  if (!appProperties ||
+      appProperties[PROJECT100_MVP_SOURCE_MARKER_KEY] !== PROJECT100_MVP_SOURCE_MARKER_VALUE ||
+      String(appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY] || "") !== wantedProjectId) {
+    throw new Error("DRIVE_SOURCE_IDENTITY_MISMATCH");
+  }
+  return {
+    id: reservedId,
+    name: wantedFilename,
+    mimeType: metadata.mimeType,
+    webViewLink: metadata.webViewLink ||
+      `https://drive.google.com/file/d/${reservedId}/view`
+  };
+}
+
 async function project100MvpWriteCanonicalBinding(driveFileId, driveUrl, previousBinding) {
   const binding = {
     version: 1,
@@ -1522,7 +1571,19 @@ async function project100MvpCreateSourceFile(filename, projectId, bytesInput, re
     // non-interactively and must never re-prompt.
     false
   );
-  const file = await project100MvpParseJsonResponse(response, "DRIVE_CREATE_FAILED");
+  let file;
+  try {
+    file = await project100MvpParseJsonResponse(response, "DRIVE_CREATE_FAILED");
+  } catch (error) {
+    // A retry against the same generated ID may report that the exact create
+    // already exists. Let the caller read that ID back before deciding whether
+    // the object can be recovered; never turn a conflict into a new create.
+    if (response.status === 409 ||
+        /already\s+(?:exists|in\s+use)|conflict/i.test(String(error && error.message || ""))) {
+      error.sourceCreateConflict = true;
+    }
+    throw error;
+  }
   const fileId = project100MvpNormalizeDriveFileId(file.id);
   if (fileId !== reservedId) {
     throw new Error("DRIVE_ID_MISMATCH");
@@ -1601,15 +1662,19 @@ async function project100MvpAssertSourceCreateIntentIdentity(filenames, projectI
     : [];
   const intentFilename = String(intent.filename || "");
   const intentProjectId = String(intent.projectId || "");
-  if (!requestedProjectId || !intentFilename || !intentProjectId ||
+  const intentExactFilename = String(intent.exactFilename || "");
+  if (!requestedProjectId || !intentFilename || intentExactFilename !== intentFilename ||
+      !intentProjectId ||
       intentProjectId !== requestedProjectId ||
-      !requestedFilenames.includes(intentFilename)) {
+      !requestedFilenames.includes(intentFilename) ||
+      !requestedFilenames.includes(intentExactFilename)) {
     throw new Error("RECOVERY_IDENTITY_MISMATCH");
   }
   return intent;
 }
 
-async function project100MvpWriteSourceCreateIntent(filename, projectId, identity = {}) {
+async function project100MvpWriteSourceCreateIntent(
+  filename, projectId, identity = {}, existingOnly = false) {
   const requestedFilename = String(filename || "");
   const requestedProjectId = String(projectId || "");
   const existing = await project100MvpReadSourceCreateIntent(requestedProjectId);
@@ -1625,6 +1690,9 @@ async function project100MvpWriteSourceCreateIntent(filename, projectId, identit
     exactFilename: String(identity.exactFilename || requestedFilename),
     contentPinSha256: String(identity.contentPinSha256 || "")
   };
+  if (existingOnly && !existing) {
+    throw new Error("RECOVERY_IDENTITY_MISMATCH");
+  }
   if (existing && (String(existing.filename || "") !== requestedFilename ||
       String(existing.projectId || "") !== requestedProjectId ||
       (requestedDriveFileId && String(existing.reservedDriveFileId || "") !== requestedDriveFileId) ||
@@ -1632,6 +1700,7 @@ async function project100MvpWriteSourceCreateIntent(filename, projectId, identit
       (identityFields.documentInstanceId && String(existing.documentInstanceId || "") !== identityFields.documentInstanceId) ||
       (identityFields.frozenScopeToken && String(existing.frozenScopeToken || "") !== identityFields.frozenScopeToken) ||
       (identityFields.frozenTargetToken && String(existing.frozenTargetToken || "") !== identityFields.frozenTargetToken) ||
+      String(existing.exactFilename || "") !== identityFields.exactFilename ||
       (identityFields.contentPinSha256 && String(existing.contentPinSha256 || "") !== identityFields.contentPinSha256))) {
     // There is only one durable create-in-flight slot. Never replace an
     // unresolved request for another filename or Project; doing so would make
@@ -1662,15 +1731,43 @@ async function project100MvpWriteSourceCreateIntent(filename, projectId, identit
   return intent;
 }
 
-async function project100MvpClearSourceCreateIntentIfMatches(filename, projectId) {
+async function project100MvpClearSourceCreateIntentIfMatches(
+  filename, projectId, driveFileId = "", identity = {}) {
   const requestedProjectId = String(projectId || "");
   const intent = await project100MvpReadSourceCreateIntent(requestedProjectId);
   if (!intent) {
     return false;
   }
   if (String(intent.filename || "") !== String(filename || "") ||
+      String(intent.exactFilename || "") !== String(filename || "") ||
       String(intent.projectId || "") !== String(projectId || "")) {
     throw new Error("RECOVERY_IDENTITY_MISMATCH");
+  }
+  if (intent.reservedDriveFileId) {
+    let intentDriveFileId = "";
+    let expectedDriveFileId = "";
+    try {
+      intentDriveFileId = project100MvpNormalizeDriveFileId(intent.reservedDriveFileId);
+      expectedDriveFileId = project100MvpNormalizeDriveFileId(driveFileId);
+    } catch (_error) {
+      throw new Error("RECOVERY_IDENTITY_MISMATCH");
+    }
+    if (intentDriveFileId !== expectedDriveFileId) {
+      throw new Error("RECOVERY_IDENTITY_MISMATCH");
+    }
+  }
+  const identityFields = [
+    "operationToken",
+    "documentInstanceId",
+    "frozenScopeToken",
+    "frozenTargetToken",
+    "contentPinSha256"
+  ];
+  for (const field of identityFields) {
+    const expected = String(identity[field] || "");
+    if (expected && String(intent[field] || "") !== expected) {
+      throw new Error("RECOVERY_IDENTITY_MISMATCH");
+    }
   }
   await project100MvpRemoveProjectState(
     PROJECT100_MVP_SOURCE_CREATE_INTENT_KEY,
@@ -1684,17 +1781,25 @@ async function project100MvpPendingSourceCreateCandidate(filename, projectId) {
     return null;
   }
   if (String(intent.filename || "") !== String(filename || "") ||
+      String(intent.exactFilename || "") !== String(filename || "") ||
       String(intent.projectId || "") !== String(projectId || "")) {
     throw new Error("RECOVERY_IDENTITY_MISMATCH");
   }
-  const reservedId = String(intent.reservedDriveFileId || "");
-  if (!reservedId) {
+  let reservedId = "";
+  try {
+    reservedId = project100MvpNormalizeDriveFileId(intent.reservedDriveFileId);
+  } catch (_error) {
     throw new Error("SOURCE_CREATE_OUTCOME_UNKNOWN");
   }
   // A create response or the following binding write may have been lost when
-  // the worker stopped. Search the exact project/name identity before any new
-  // create. Zero candidates is deliberately fail-closed: the Drive request
-  // may have succeeded but not been indexed yet.
+  // the worker stopped. Read the reserved ID first, then use the exact
+  // filename/project search only to detect a conflicting object. A direct 404
+  // proves only that this ID is currently absent; it authorizes a retry with
+  // the same ID, never a new identity.
+  const exact = await project100MvpReadSourceFileById(filename, projectId, reservedId);
+  if (exact) {
+    return exact;
+  }
   const candidates = await project100MvpSearchSourceFiles(filename, projectId);
   const matching = candidates.filter((candidate) => candidate && candidate.id === reservedId);
   const conflicting = candidates.filter((candidate) => candidate && candidate.id !== reservedId);
@@ -1704,10 +1809,13 @@ async function project100MvpPendingSourceCreateCandidate(filename, projectId) {
   if (matching.length > 1) {
     throw new Error("SOURCE_RECOVERY_AMBIGUOUS");
   }
-  if (matching.length === 0) {
-    throw new Error("SOURCE_CREATE_OUTCOME_UNKNOWN");
+  if (matching.length === 1) {
+    // Search is only a conflict/recovery hint. Re-read the exact ID so a
+    // stale or malformed search row cannot be adopted without full metadata
+    // validation.
+    return project100MvpReadSourceFileById(filename, projectId, reservedId);
   }
-  return matching[0];
+  return null;
 }
 
 // Legacy v0.3.1 guard: a logical source literally named project-source.md
@@ -1737,7 +1845,15 @@ async function project100MvpEnsureSourceFile(
   const sources = binding && Array.isArray(binding.sources) ? binding.sources : [];
   const existingEntry = sources.find((entry) => entry.filename === filename);
   if (existingEntry && existingEntry.driveFileId) {
-    await project100MvpClearSourceCreateIntentIfMatches(filename, projectId);
+    const pendingIntent = await project100MvpReadSourceCreateIntent();
+    if (pendingIntent) {
+      await project100MvpWriteSourceCreateIntent(filename, projectId, {
+        ...createIdentity,
+        reservedDriveFileId: reservedDriveFileId || pendingIntent.reservedDriveFileId
+      }, true);
+    }
+    await project100MvpClearSourceCreateIntentIfMatches(
+      filename, projectId, existingEntry.driveFileId, createIdentity);
     return {
       reused: true,
       created: false,
@@ -1749,9 +1865,24 @@ async function project100MvpEnsureSourceFile(
     throw new Error("LEGACY_SOURCE_AMBIGUOUS");
   }
   const pendingIntent = await project100MvpReadSourceCreateIntent();
-  const pendingCandidate = await project100MvpPendingSourceCreateCandidate(filename, projectId);
-  const tagged = pendingCandidate
-    ? [pendingCandidate]
+  if (pendingIntent) {
+    // The existing-intent branch is read-only when the record already exists,
+    // but it performs the full operation/artifact/content-pin identity check.
+    // Do this before recovering an exact Drive object so a same-name retry from
+    // a different frozen artifact cannot adopt the old create.
+    await project100MvpWriteSourceCreateIntent(filename, projectId, {
+      ...createIdentity,
+      reservedDriveFileId: reservedDriveFileId || pendingIntent.reservedDriveFileId
+    }, true);
+  }
+  const pendingCandidate = pendingIntent
+    ? await project100MvpPendingSourceCreateCandidate(filename, projectId)
+    : null;
+  // When an intent exists, PendingSourceCreateCandidate has already performed
+  // the only safe exact-ID reconciliation. Do not fall back to adopting an
+  // arbitrary same-name candidate after a reserved-ID 404.
+  const tagged = pendingIntent
+    ? (pendingCandidate ? [pendingCandidate] : [])
     : await project100MvpSearchSourceFiles(filename, projectId);
   if (tagged.length > 1) {
     throw new Error("SOURCE_RECOVERY_AMBIGUOUS");
@@ -1781,16 +1912,32 @@ async function project100MvpEnsureSourceFile(
       reservedDriveFileId: reservedId
     });
     await project100MvpWriteSourceCreateIntent(filename, projectId, identity);
-    const created = await project100MvpCreateSourceFile(
-      filename, projectId, contentBytes, reservedId);
-    if (created.id !== reservedId) {
+    let created = null;
+    let resolved = null;
+    try {
+      created = await project100MvpCreateSourceFile(
+        filename, projectId, contentBytes, reservedId);
+      resolved = created;
+    } catch (error) {
+      if (!error || error.sourceCreateConflict !== true) {
+        throw error;
+      }
+      // A same-ID conflict is not success by itself. Read back and validate
+      // the exact reserved object before treating it as recovery.
+      resolved = await project100MvpReadSourceFileById(filename, projectId, reservedId);
+      if (!resolved) {
+        throw new Error("SOURCE_CREATE_OUTCOME_UNKNOWN");
+      }
+    }
+    if (!resolved || resolved.id !== reservedId) {
       throw new Error("DRIVE_ID_MISMATCH");
     }
     fileRecord = {
       reused: false,
-      created: true,
-      driveFileId: created.id,
-      driveUrl: created.webViewLink
+      created: Boolean(created),
+      driveFileId: resolved.id,
+      driveUrl: resolved.webViewLink ||
+        `https://drive.google.com/file/d/${resolved.id}/view`
     };
   }
   // Immediate persistence: update (or append) the V2 binding entry NOW.
@@ -1820,7 +1967,8 @@ async function project100MvpEnsureSourceFile(
   base.projectId = base.projectId || String(projectId || "");
   base.updatedAt = new Date().toISOString();
   await project100MvpWriteBindingV2(base, project100MvpActiveProjectId);
-  await project100MvpClearSourceCreateIntentIfMatches(filename, projectId);
+  await project100MvpClearSourceCreateIntentIfMatches(
+    filename, projectId, fileRecord.driveFileId, createIdentity);
   return fileRecord;
 }
 

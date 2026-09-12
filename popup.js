@@ -375,6 +375,52 @@
       sameFilenameSet(currentNames, binding.sources);
   }
 
+  // An established receipt may reopen only for a genuinely newer artifact
+  // scope. This mirrors the BOUND_UNPROVEN identity gate above, but uses the
+  // durable Published state as the baseline and never makes the receipt itself
+  // disposable.
+  function isEstablishedNewRevision({ page, binding, publishState } = {}) {
+    if (!page || !page.isProject || !binding || binding.version !== 2 ||
+        !publishState || publishState.status !== "published" ||
+        publishState.driveUpdated !== true) {
+      return false;
+    }
+    const record = binding.establishment;
+    if (!record || record.version !== 1 || record.state !== "ESTABLISHED" ||
+        !binding.sourcePageUrl ||
+        projectSegmentOfUrl(binding.sourcePageUrl) !== String(page.projectSegment || "")) {
+      return false;
+    }
+    const bindingProjectId = String(binding.projectId || "");
+    if (bindingProjectId && bindingProjectId !== String(page.projectSegment || "") &&
+        bindingProjectId !== projectSegmentOfUrl(binding.sourcePageUrl)) {
+      return false;
+    }
+    if (!Array.isArray(binding.sources) || binding.sources.length === 0 ||
+        !sameFilenameSet(record.initialFilenames, binding.sources)) {
+      return false;
+    }
+    const driveIds = new Set();
+    for (const entry of binding.sources) {
+      if (!entry || !sourceFilename(entry) || !entry.driveFileId ||
+          entry.sourceBound !== true || !entry.sourceBoundAt ||
+          driveIds.has(String(entry.driveFileId))) {
+        return false;
+      }
+      driveIds.add(String(entry.driveFileId));
+    }
+    const artifact = page.artifact || {};
+    const currentNames = artifactFilenames(artifact);
+    const count = artifactCount(artifact);
+    const baselineScopeIndex = Number(publishState.artifactScopeIndex);
+    const winningScopeIndex = Number(artifact.winningScopeIndex);
+    return artifact.error === "" && (artifact.invalid || 0) === 0 &&
+      Number.isInteger(baselineScopeIndex) && baselineScopeIndex >= 0 &&
+      Number.isInteger(winningScopeIndex) && winningScopeIndex > baselineScopeIndex &&
+      count === currentNames.length && count > 0 &&
+      sameFilenameSet(currentNames, binding.sources);
+  }
+
   // Product-state machine (multi-source v1). Inputs:
   //   page         — null | { isProject, projectSegment, artifact:{count, filename, filenames, invalid, error} }
   //   binding      — stored V2 Project binding or null
@@ -386,6 +432,16 @@
     const bound = bindingComplete(binding);
     const status = publishState && publishState.status;
     if (isBoundUnprovenNewRevision({ page, binding, publishState })) {
+      const artifact = page.artifact || {};
+      const filenames = artifactFilenames(artifact);
+      const count = artifactCount(artifact);
+      return {
+        state: "F",
+        filename: count === 1 ? (artifact.filename || filenames[0] || "") : "",
+        count
+      };
+    }
+    if (isEstablishedNewRevision({ page, binding, publishState })) {
       const artifact = page.artifact || {};
       const filenames = artifactFilenames(artifact);
       const count = artifactCount(artifact);
@@ -919,6 +975,7 @@
     mapFailureCopy,
     isInitialCompletionUnprovenPostSave,
     isBoundUnprovenNewRevision,
+    isEstablishedNewRevision,
     localizeDateTime
   };
   if (typeof globalThis !== "undefined") {
@@ -1171,7 +1228,7 @@
     const confirmationUnavailable = isInitialCompletionUnprovenPostSave(publishState);
     const newPostInitialRevision = isBoundUnprovenNewRevision({
       page, binding, publishState
-    });
+    }) || isEstablishedNewRevision({ page, binding, publishState });
 
     renderDiscovery();
     renderSourceProgress();
