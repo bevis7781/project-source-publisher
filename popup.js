@@ -362,6 +362,7 @@
       (publishState.lifecycleState === "BOUND_UNPROVEN" &&
         publishState.transaction === "BOUND_RECONCILIATION" &&
         new Set([
+          "INITIAL_COMPLETION_UNPROVEN",
           "PROJECT_SOURCE_SYNC_UNCONFIRMED",
           "BACKEND_RECEIPT_UNAVAILABLE",
           "POST_SYNC_SETTLE_TIMEOUT",
