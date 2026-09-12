@@ -8,6 +8,8 @@ A browser extension that takes Markdown files generated in your Project conversa
 
 **First time:** connect each Source → **After that:** generate a revision with the same filename → **Publish**
 
+![PSP workflow: a revised plan.md in ChatGPT, the PSP popup with Publish, and the result Published](docs/assets/psp-readme-hero.png)
+
 ## Availability
 
 **v0.3.1 · GitHub public beta · Edge Add-ons submission in review**
@@ -39,6 +41,10 @@ For example: connect `plan.md` once, then generate a revised `plan.md` in the sa
 1. Generate revised Markdown files using the established filenames in the Project conversation.
 2. Open PSP and choose **Publish**. It checks the bound file identities, writes the updates, and reads the contents back to verify them before refreshing the Sources.
 3. Follow the progress for each file. PSP shows **Published** for the whole operation only when every target has sufficient completion confirmation.
+
+![PSP demo: publishing a revised plan.md updates the same Drive file and refreshes the Project Source](docs/assets/psp-demo.gif)
+
+*Real PSP v0.3.1 pre-store runtime using a non-sensitive test Project.*
 
 PSP follows the current ChatGPT Project automatically, offers English and Chinese interfaces, and checks Source identity before restoring connections after a reinstall.
 
