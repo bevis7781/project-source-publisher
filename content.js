@@ -6,20 +6,9 @@
   }
   window.__project100SourcePublisherSpikeLoaded = true;
 
-  let TEST_FILENAME = "source-test.md";
-  let EXPECTED_DRIVE_ID = "1V-zE0fJNbY_ndW41ovaM-pp9NhziBrJy";
-  const EXPECTED_ARTIFACT = {
-    canary: "project100-live-browser",
-    revision: "v6",
-    nonce: "606VMUOLU2L4",
-    byteLength: 69,
-    sha256: "7909ac67ac5fcafc9a63f0203802d7e8e100b8520419bb94935c18966be85d13"
-  };
-  const PREFERRED_DOWNLOAD_LABELS = new Set([
-    "下载 source-test.md",
-    "Download source-test.md"
-  ]);
-  const UNRELATED_INTERFACE_LABEL_RE = /^(?:正在编码引语|encoding\s+citation|quote(?:\s|$)|citation(?:\s|$))/i;
+  // Identity is supplied by the active operation; empty defaults fail closed.
+  let activeFilename = "";
+  let activeDriveFileId = "";
   // Must stay strictly above the service-worker capture timeout
   // (DOWNLOAD_CAPTURE_TIMEOUT_MS = 12000) so the armed job's timeout payload
   // with its bounded download diagnostic arrives before the page gives up.
@@ -144,7 +133,7 @@
   const LINKED_SOURCE_ATTRIBUTE_RE = /^(?:data-(?:source|drive|project-source|linked-source)(?:-|$)|aria-(?:label|description)|title)$/i;
   // T3 identity rule: a bare Drive ID is accepted only from attributes whose
   // name itself declares an ID semantic, and only when the value equals
-  // EXPECTED_DRIVE_ID. Visible text is never identity unless it carries a
+  // activeDriveFileId. Visible text is never identity unless it carries a
   // parseable drive.google.com URL.
   const EXPLICIT_DRIVE_ID_ATTRIBUTE_RE = /^(?:data-drive-id|data-source-id|data-file-id)$/i;
 
@@ -260,8 +249,11 @@
   }
 
   function hasExactFilename(value) {
+    const filename = String(activeFilename || "").trim().toLowerCase();
+    if (!filename) {
+      return false;
+    }
     const decoded = decodeMaybe(value).toLowerCase();
-    const filename = TEST_FILENAME.toLowerCase();
     const index = decoded.indexOf(filename);
     if (index < 0) {
       return false;
@@ -269,22 +261,6 @@
     const before = decoded[index - 1] || "";
     const after = decoded[index + filename.length] || "";
     return !/[a-z0-9_.-]/i.test(before) && !/[a-z0-9_.-]/i.test(after);
-  }
-
-  function isPreferredDownloadAction(element) {
-    if (!isElement(element) || !isVisible(element) || element.tagName !== "BUTTON") {
-      return false;
-    }
-    const label = String(element.getAttribute("aria-label") || "").trim();
-    return PREFERRED_DOWNLOAD_LABELS.has(label);
-  }
-
-  function isUnrelatedInterfaceControl(element) {
-    if (!isElement(element)) {
-      return false;
-    }
-    const label = String(element.getAttribute("aria-label") || "").trim();
-    return UNRELATED_INTERFACE_LABEL_RE.test(label);
   }
 
   function getElementId(element) {
@@ -390,7 +366,8 @@
   }
 
   function containsKnownDriveId(value) {
-    return decodeMaybe(value).includes(EXPECTED_DRIVE_ID);
+    const driveFileId = String(activeDriveFileId || "").trim();
+    return Boolean(driveFileId) && decodeMaybe(value).includes(driveFileId);
   }
 
   function isAllowedArtifactHost(rawValue) {
@@ -562,59 +539,15 @@
   function artifactFilenameEvidence(element) {
     const ownText = elementText(element);
     if (hasExactFilename(ownText)) {
-      return TEST_FILENAME;
+      return activeFilename;
     }
 
     for (const { name, value } of relevantAttributes(element)) {
       if (hasExactFilename(value)) {
-        return TEST_FILENAME;
+        return activeFilename;
       }
     }
     return "";
-  }
-
-  function isArtifactSemanticElement(element) {
-    if (!isElement(element)) {
-      return false;
-    }
-    return ["A", "BUTTON"].includes(element.tagName) ||
-      ["link", "button"].includes((element.getAttribute("role") || "").toLowerCase()) ||
-      element.hasAttribute("download") ||
-      ["data-file-id", "data-attachment-id", "data-artifact-id", "data-download-url", "data-file-url", "data-artifact-url"]
-        .some((name) => element.hasAttribute(name));
-  }
-
-  function findArtifactContainer(element, identityNode) {
-    let current = identityNode || element;
-    let depth = 0;
-    let fallback = identityNode || element;
-    while (current && depth < 8 && current !== document.body) {
-      const text = elementText(current);
-      if (hasExactFilename(text)) {
-        fallback = current;
-        const hasSemanticBoundary = current.matches(SOURCE_CONTAINER_SELECTOR) || current.querySelector("a[href], [role=button], button");
-        if (hasSemanticBoundary) {
-          return current;
-        }
-      }
-      current = current.parentElement;
-      depth += 1;
-    }
-    return fallback;
-  }
-
-  function findArtifactScope(element, identityNode) {
-    const fallback = findArtifactContainer(element, identityNode);
-    let current = identityNode || element;
-    let depth = 0;
-    while (current && depth < 12 && current !== document.body) {
-      if (current.matches(ARTIFACT_TURN_SELECTOR) && hasExactFilename(elementText(current))) {
-        return current;
-      }
-      current = current.parentElement;
-      depth += 1;
-    }
-    return fallback;
   }
 
   function artifactAliasCount(scope, primaryElement) {
@@ -625,107 +558,6 @@
       .filter((element) => element !== primaryElement && isVisible(element) && artifactFilenameEvidence(element))
       .length;
   }
-
-  function artifactCandidateDiagnostic(candidate) {
-    const element = candidate.element;
-    const attrs = {};
-    for (const { name, value } of relevantAttributes(element)) {
-      const sensitiveIdentity = /(?:token|secret|auth|cookie|password|(?:data-)?(?:file|attachment|artifact|source|drive)-id)/i.test(name);
-      attrs[name] = name === "href" || /url/i.test(name)
-        ? sanitizeUrl(value)
-        : sensitiveIdentity
-          ? `[redacted; length=${value.length}]`
-          : clippedText(value, 100);
-    }
-    return {
-      candidate_status: candidate.rejectionReason ? "rejected" : "eligible",
-      rejection_reason: candidate.rejectionReason || "",
-      tag: element.tagName.toLowerCase(),
-      href: candidate.identity && candidate.identity.diagnosticUrl ? candidate.identity.diagnosticUrl : "",
-      aria_label: clippedText(element.getAttribute("aria-label"), 100),
-      title: clippedText(element.getAttribute("title"), 100),
-      relevant_attributes: attrs,
-      nearby_semantic_structure: semanticPath(candidate.container),
-      candidate_file_token: candidate.candidateFileToken || TEST_FILENAME,
-      preferred_action: candidate.preferredAction
-        ? {
-          tag: element.tagName.toLowerCase(),
-          aria_label: clippedText(element.getAttribute("aria-label"), 100)
-        }
-        : null,
-      artifact_alias_count: candidate.aliasCount || 0
-    };
-  }
-
-  function makeArtifactCandidate(element, preferredAction = false) {
-    const { identity, identityNode } = findArtifactIdentity(element);
-    const container = findArtifactScope(element, identityNode);
-    return {
-      element,
-      container,
-      identity,
-      identityNode,
-      preferredAction,
-      aliasCount: artifactAliasCount(container, element),
-      candidateFileToken: TEST_FILENAME
-    };
-  }
-
-  function collectRejectedArtifactHits(preferredElements, rejectedByElement) {
-    const elements = Array.from(document.querySelectorAll(ARTIFACT_SELECTOR));
-    const preferredSet = new Set(preferredElements);
-    for (const element of elements) {
-      if (!isVisible(element) || preferredSet.has(element)) {
-        continue;
-      }
-
-      const filenameHit = Boolean(artifactFilenameEvidence(element));
-      const unrelatedControl = isUnrelatedInterfaceControl(element);
-      if (!filenameHit && !unrelatedControl) {
-        continue;
-      }
-      if (!isArtifactSemanticElement(element) && elementText(element).length > 120) {
-        continue;
-      }
-
-      const candidate = makeArtifactCandidate(element);
-      const contextReason = artifactCandidateRejectionReason(candidate);
-      candidate.rejectionReason = contextReason ||
-        (unrelatedControl
-          ? "REJECTED_UNRELATED_INTERFACE_CONTROL"
-          : "REJECTED_NON_PREFERRED_FILENAME_HIT");
-      rejectedByElement.set(element, candidate);
-    }
-  }
-
-  function collectArtifactCandidates() {
-    const candidates = [];
-    const preferredElements = Array.from(document.querySelectorAll("button"))
-      .filter((element) => isPreferredDownloadAction(element));
-    const rejectedByElement = new Map();
-
-    for (const element of preferredElements) {
-      const candidate = makeArtifactCandidate(element, true);
-      const rejectionReason = artifactCandidateRejectionReason(candidate);
-      if (rejectionReason) {
-        candidate.rejectionReason = rejectionReason;
-        rejectedByElement.set(element, candidate);
-        continue;
-      }
-      candidates.push(candidate);
-    }
-
-    collectRejectedArtifactHits(preferredElements, rejectedByElement);
-    for (const candidate of candidates) {
-      candidate.diagnostic = artifactCandidateDiagnostic(candidate);
-    }
-    const rejected = Array.from(rejectedByElement.values());
-    for (const candidate of rejected) {
-      candidate.diagnostic = artifactCandidateDiagnostic(candidate);
-    }
-    return { candidates, rejected, preferredActions: preferredElements };
-  }
-
 
   function parseDataUrl(url) {
     const comma = url.indexOf(",");
@@ -820,7 +652,7 @@
   async function armDownloadCapture() {
     const response = await chrome.runtime.sendMessage({
       type: "PROJECT100_ARM_DOWNLOAD_CAPTURE",
-      filename: TEST_FILENAME
+      filename: activeFilename
     });
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : "DOWNLOAD_CAPTURE_ARM_FAILED");
@@ -913,14 +745,14 @@
   function previewIdentitySummary(container, evidence, preexisting) {
     const text = elementText(container);
     return {
-      proven_filename: TEST_FILENAME,
+      proven_filename: activeFilename,
       tag: container.tagName.toLowerCase(),
       role: container.getAttribute("role") || "",
       aria_label: clippedText(container.getAttribute("aria-label"), 120),
       title: clippedText(container.getAttribute("title"), 120),
       filename_evidence: evidence,
-      content_canary_visible: text.includes(`SOURCE_CANARY=${EXPECTED_ARTIFACT.canary}`),
-      content_nonce_visible: text.includes(EXPECTED_ARTIFACT.nonce),
+      content_canary_visible: Boolean(extractField(text, "SOURCE_CANARY")),
+      content_nonce_visible: Boolean(extractField(text, "NONCE")),
       preexisting_before_opener_click: preexisting
     };
   }
@@ -1392,152 +1224,6 @@
     return match ? match[1].trim() : "";
   }
 
-  function addArtifactValidationErrors(result, bytes) {
-    result.final_lf = bytes.byteLength > 0 && bytes[bytes.byteLength - 1] === 0x0A;
-    result.contains_cr = bytes.includes(0x0D);
-    result.has_bom = bytes.byteLength >= 3 &&
-      bytes[0] === 0xEF &&
-      bytes[1] === 0xBB &&
-      bytes[2] === 0xBF;
-    result.utf8_valid = false;
-    let text = "";
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      result.utf8_valid = true;
-    } catch (_error) {
-      result.errors.push("INVALID_UTF8");
-    }
-    result.canary = extractField(text, "SOURCE_CANARY");
-    result.revision = extractField(text, "REVISION");
-    result.nonce = extractField(text, "NONCE");
-    if (!result.final_lf) {
-      result.errors.push("FINAL_LF_MISSING");
-    }
-    if (result.contains_cr) {
-      result.errors.push("CR_BYTE_PRESENT");
-    }
-    if (result.has_bom) {
-      result.errors.push("UTF8_BOM_PRESENT");
-    }
-    if (result.byte_length !== EXPECTED_ARTIFACT.byteLength) {
-      result.errors.push("BYTE_LENGTH_MISMATCH");
-    }
-    if (result.sha256 !== EXPECTED_ARTIFACT.sha256) {
-      result.errors.push("SHA256_MISMATCH");
-    }
-    if (result.canary !== EXPECTED_ARTIFACT.canary) {
-      result.errors.push("CANARY_MISMATCH");
-    }
-    if (result.revision !== EXPECTED_ARTIFACT.revision) {
-      result.errors.push("REVISION_MISMATCH");
-    }
-    if (result.nonce !== EXPECTED_ARTIFACT.nonce) {
-      result.errors.push("NONCE_MISMATCH");
-    }
-    result.exact_bytes = result.errors.length === 0;
-    return text;
-  }
-
-  function baseArtifactResult() {
-    return {
-      experiment: "artifact_capture",
-      status: "BLOCKED",
-      filename: TEST_FILENAME,
-      stage: "identity",
-      matching_artifacts: 0,
-      preferred_download_actions: 0,
-      preview_openers: 0,
-      selected_action: null,
-      preview_identity: null,
-      preview_download_actions: 0,
-      selected_download_action: null,
-      identity_type: "",
-      identity_source: "",
-      capture_method: "none",
-      automatic_capture: false,
-      private_endpoint_used: false,
-      download_diagnostic: null,
-      byte_length: 0,
-      sha256: "",
-      canary: "",
-      revision: "",
-      nonce: "",
-      utf8_valid: false,
-      has_bom: false,
-      final_lf: false,
-      contains_cr: false,
-      exact_bytes: false,
-      errors: []
-    };
-  }
-
-  async function runArtifactCapture() {
-    const result = baseArtifactResult();
-    const artifactDiscovery = collectArtifactCandidates();
-    const candidates = artifactDiscovery.candidates;
-    const rejectedCandidates = artifactDiscovery.rejected;
-    result.matching_artifacts = candidates.length;
-    result.preferred_download_actions = artifactDiscovery.preferredActions.length;
-
-    if (result.preferred_download_actions !== 1) {
-      result.stage = "action-resolution";
-      result.errors.push("PREFERRED_DOWNLOAD_ACTIONS_" + result.preferred_download_actions);
-      if (result.preferred_download_actions === 0) {
-        result.errors.push("NO_GENERATED_ARTIFACT_IDENTITY");
-      }
-      result.diagnostics = candidates.concat(rejectedCandidates)
-        .slice(0, DIAGNOSTIC_LIMIT)
-        .map((candidate) => candidate.diagnostic);
-      return result;
-    }
-
-    if (candidates.length !== 1) {
-      result.stage = artifactDiscovery.preferredActions.length > 0 ? "action-resolution" : "identity";
-      result.errors.push(candidates.length === 0 ? "NO_GENERATED_ARTIFACT_IDENTITY" : `MATCHING_ARTIFACTS_${candidates.length}`);
-      result.diagnostics = candidates.concat(rejectedCandidates)
-        .slice(0, DIAGNOSTIC_LIMIT)
-        .map((candidate) => candidate.diagnostic);
-      return result;
-    }
-
-    const candidate = candidates[0];
-    result.stage = "action-resolution";
-    result.preview_openers = 1;
-    result.selected_action = {
-      tag: candidate.element.tagName.toLowerCase(),
-      aria_label: String(candidate.element.getAttribute("aria-label") || "").trim()
-    };
-    result.identity_type = candidate.identity ? candidate.identity.identityType : "preferred_download_button";
-    result.identity_source = candidate.identity ? candidate.identity.identitySource : "button[aria-label]";
-
-    try {
-      const capture = await captureViaPreviewDownload(candidate, result, (stage) => {
-        result.stage = stage;
-      });
-      if (!capture) {
-        return result;
-      }
-      result.automatic_capture = Boolean(capture.automaticCapture);
-      result.capture_method = capture.method;
-      result.private_endpoint_used = capture.privateEndpointUsed;
-      result.byte_length = capture.bytes.byteLength;
-      result.sha256 = await sha256Hex(capture.bytes);
-      result.stage = "verification";
-      addArtifactValidationErrors(result, capture.bytes);
-      result.status = result.errors.length === 0 ? "PASS" : "BLOCKED";
-      if (result.errors.length > 0) {
-        result.diagnostics = [candidate.diagnostic];
-      }
-    } catch (error) {
-      result.errors.push(error instanceof Error ? clippedText(error.message, 180) : "DIRECT_FETCH_FAILED");
-      result.download_diagnostic = error && error.downloadDiagnostic ? error.downloadDiagnostic : null;
-      result.diagnostics = [candidate.diagnostic];
-      return result;
-    }
-
-    return result;
-  }
-
   function extractDriveId(value) {
     const decoded = decodeMaybe(value);
     const patterns = [
@@ -1561,6 +1247,10 @@
     if (!isElement(element)) {
       return null;
     }
+    const driveFileId = String(activeDriveFileId || "").trim();
+    if (!driveFileId) {
+      return null;
+    }
 
     const entries = relevantAttributes(element);
     for (const { name, value } of entries) {
@@ -1569,7 +1259,7 @@
           continue;
         }
         const urlId = extractDriveId(value);
-        if (urlId === EXPECTED_DRIVE_ID) {
+        if (urlId === driveFileId) {
           return {
             id: urlId,
             method: `${element.tagName.toLowerCase()}[${name}]`,
@@ -1578,7 +1268,7 @@
         }
         continue;
       }
-      if (EXPLICIT_DRIVE_ID_ATTRIBUTE_RE.test(name) && value === EXPECTED_DRIVE_ID) {
+      if (EXPLICIT_DRIVE_ID_ATTRIBUTE_RE.test(name) && value === driveFileId) {
         return {
           id: value,
           method: `${element.tagName.toLowerCase()}[${name}]`,
@@ -1588,7 +1278,7 @@
     }
 
     const textId = extractDriveId(elementText(element));
-    if (textId === EXPECTED_DRIVE_ID) {
+    if (textId === driveFileId) {
       return {
         id: textId,
         method: `${element.tagName.toLowerCase()}[text]`,
@@ -1713,7 +1403,7 @@
         data_menu_trigger: element.getAttribute("data-menu-trigger") || ""
       }));
     return {
-      filename: TEST_FILENAME,
+      filename: activeFilename,
       drive_url_or_id: source.driveDisplay,
       semantic_container: {
         tag: container.tagName.toLowerCase(),
@@ -1774,7 +1464,7 @@
           container,
           driveId: evidence ? evidence.id : "",
           driveIdentityMethod: evidence ? evidence.method : "",
-          driveDisplay: evidence ? evidence.display : EXPECTED_DRIVE_ID,
+          driveDisplay: evidence ? evidence.display : activeDriveFileId,
           actionControls: findActionControls(container)
         });
       }
@@ -2003,7 +1693,7 @@
     return {
       experiment: "source_resync",
       status: "BLOCKED",
-      expected_drive_id: EXPECTED_DRIVE_ID,
+      expected_drive_id: activeDriveFileId,
       matching_sources: 0,
       source_identity_method: "",
       action_controls_found: 0,
@@ -2032,7 +1722,7 @@
     let source = sources[0];
     result.source_identity_method = source.driveIdentityMethod;
     result.action_controls_found = source.actionControls.length;
-    if (source.driveId !== EXPECTED_DRIVE_ID) {
+    if (source.driveId !== activeDriveFileId) {
       result.errors.push("DRIVE_ID_MISMATCH");
       result.diagnostics = [source.diagnostic];
       return result;
@@ -2144,10 +1834,10 @@
       return { status: "BLOCKED", error: validated.error };
     }
 
-    const previousFilename = TEST_FILENAME;
-    const previousDriveId = EXPECTED_DRIVE_ID;
-    TEST_FILENAME = validated.filename;
-    EXPECTED_DRIVE_ID = validated.driveFileId;
+    const previousFilename = activeFilename;
+    const previousDriveId = activeDriveFileId;
+    activeFilename = validated.filename;
+    activeDriveFileId = validated.driveFileId;
 
     try {
       const sources = collectSourceCandidates();
@@ -2182,8 +1872,8 @@
         sourcePageUrl: window.location.href
       };
     } finally {
-      TEST_FILENAME = previousFilename;
-      EXPECTED_DRIVE_ID = previousDriveId;
+      activeFilename = previousFilename;
+      activeDriveFileId = previousDriveId;
     }
   }
 
@@ -2527,7 +2217,7 @@
     const windowId = String(context.windowId || `p100-${Date.now()}`);
     const armed = {
       windowId,
-      driveFileId: String(context.driveFileId || driveFileId || EXPECTED_DRIVE_ID),
+      driveFileId: String(context.driveFileId || driveFileId || activeDriveFileId),
       projectId: String(context.projectId || project100ResolveProjectId(window.location.href)),
       deadline: Number(context.deadline) || 0
     };
@@ -2826,7 +2516,7 @@
 
   function project100NetworkEvidenceSnapshot() {
     const context = {
-      driveFileId: (pendingNetworkArm && pendingNetworkArm.driveFileId) || EXPECTED_DRIVE_ID,
+      driveFileId: (pendingNetworkArm && pendingNetworkArm.driveFileId) || activeDriveFileId,
       projectId: (pendingNetworkArm && pendingNetworkArm.projectId) ||
         project100ResolveProjectId(window.location.href),
       windowId: networkObservation.windowId
@@ -2844,10 +2534,10 @@
     if (!validated.ok) {
       return { status: "BLOCKED", error: validated.error };
     }
-    const previousFilename = TEST_FILENAME;
-    const previousDriveId = EXPECTED_DRIVE_ID;
-    TEST_FILENAME = validated.filename;
-    EXPECTED_DRIVE_ID = validated.driveFileId;
+    const previousFilename = activeFilename;
+    const previousDriveId = activeDriveFileId;
+    activeFilename = validated.filename;
+    activeDriveFileId = validated.driveFileId;
     try {
       const sources = collectSourceCandidates();
       if (sources.length !== 1) {
@@ -2871,21 +2561,21 @@
         }
       };
     } finally {
-      TEST_FILENAME = previousFilename;
-      EXPECTED_DRIVE_ID = previousDriveId;
+      activeFilename = previousFilename;
+      activeDriveFileId = previousDriveId;
     }
   }
 
   async function runMvpBoundResync(filename, driveFileId) {
-    const previousFilename = TEST_FILENAME;
-    const previousDriveId = EXPECTED_DRIVE_ID;
-    TEST_FILENAME = filename;
-    EXPECTED_DRIVE_ID = driveFileId;
+    const previousFilename = activeFilename;
+    const previousDriveId = activeDriveFileId;
+    activeFilename = filename;
+    activeDriveFileId = driveFileId;
     try {
       return await runSourceResync();
     } finally {
-      TEST_FILENAME = previousFilename;
-      EXPECTED_DRIVE_ID = previousDriveId;
+      activeFilename = previousFilename;
+      activeDriveFileId = previousDriveId;
     }
   }
 
@@ -2900,7 +2590,7 @@
       return false;
     }
     const label = String(element.getAttribute("aria-label") || "").trim();
-    return mvpDownloadLabels(TEST_FILENAME).has(label);
+    return mvpDownloadLabels(activeFilename).has(label);
   }
 
   // ---- Artifact candidate extraction (PC-1A frozen operation helper) -------
@@ -3279,12 +2969,12 @@
   // Production capture (PC-1A) reuses the frozen page-lifetime target from
   // operation start. It never discovers the current chat again and never
   // chooses a same-name replacement. The requested logical filename arrives
-  // via TEST_FILENAME (set by runMvpPublishCapture).
+  // via activeFilename (set by runMvpPublishCapture).
   async function runMvpArtifactCapture(frozenTargetIdentity) {
     const result = {
       status: "BLOCKED",
       stage: "identity",
-      filename: TEST_FILENAME,
+      filename: activeFilename,
       matching_openers: 0,
       markdown_candidates: 0,
       markdown_invalid_candidates: 0,
@@ -3316,7 +3006,7 @@
       nonce: "",
       errors: []
     };
-    const resolved = resolveFrozenArtifactTarget(frozenTargetIdentity, TEST_FILENAME);
+    const resolved = resolveFrozenArtifactTarget(frozenTargetIdentity, activeFilename);
     if (!resolved.ok) {
       result.errors.push(resolved.error);
       return result;
@@ -3355,10 +3045,10 @@
       return current.target;
     };
     // The frozen preview/download chain keys its exact-filename evidence and
-    // the armed chrome.downloads capture on TEST_FILENAME; swap in the
+    // the armed chrome.downloads capture on activeFilename; swap in the
     // selected artifact filename for the whole awaited capture, then restore.
-    const previousFilename = TEST_FILENAME;
-    TEST_FILENAME = selected.exactFilename;
+    const previousFilename = activeFilename;
+    activeFilename = selected.exactFilename;
     try {
       // Same-card direct-download is the preferred path when the live card
       // yields a deterministic direct action; the frozen Preview chain stays
@@ -3415,29 +3105,24 @@
       }
       return result;
     } finally {
-      TEST_FILENAME = previousFilename;
+      activeFilename = previousFilename;
     }
   }
 
   // Identity swaps must span the whole awaited capture/resync: save, set,
   // await, restore in finally — never restore before the async work ends.
   async function runMvpPublishCapture(filename, driveFileId, frozenTargetIdentity) {
-    const previousFilename = TEST_FILENAME;
-    const previousDriveId = EXPECTED_DRIVE_ID;
-    TEST_FILENAME = filename;
-    EXPECTED_DRIVE_ID = driveFileId;
+    const previousFilename = activeFilename;
+    const previousDriveId = activeDriveFileId;
+    activeFilename = filename;
+    activeDriveFileId = driveFileId;
     try {
       return await runMvpArtifactCapture(frozenTargetIdentity);
     } finally {
-      TEST_FILENAME = previousFilename;
-      EXPECTED_DRIVE_ID = previousDriveId;
+      activeFilename = previousFilename;
+      activeDriveFileId = previousDriveId;
     }
   }
-
-  // Page-lifetime T1 run state. Lets the popup recover the last result after
-  // Chrome closes it during the automated UI sequence; gone on page refresh.
-  let t1RunState = "idle";
-  let lastT1Result = null;
 
   // Per-document identity (HY7 production hardening): a fresh Sources reload
   // creates a NEW document; the service worker must never classify a reload's
@@ -3736,7 +3421,7 @@
       };
       const freshContext = {
         driveFileId: String(message.driveFileId ||
-          (pendingNetworkArm && pendingNetworkArm.driveFileId) || EXPECTED_DRIVE_ID),
+          (pendingNetworkArm && pendingNetworkArm.driveFileId) || activeDriveFileId),
         projectId: String(message.projectId || project100ResolveProjectId(window.location.href)),
         originalPreCompletedAt: String(message.originalPreCompletedAt || "")
       };
@@ -3816,49 +3501,6 @@
         });
       return true;
     }
-    if (message && message.type === "PROJECT100_GET_T1_STATE") {
-      sendResponse({
-        run_state: t1RunState,
-        result: lastT1Result
-      });
-      return false;
-    }
-    if (!message || !["PROJECT100_RUN_A", "PROJECT100_RUN_B"].includes(message.type)) {
-      return false;
-    }
-
-    const isT1 = message.type === "PROJECT100_RUN_A";
-    const operation = isT1 ? runArtifactCapture : runSourceResync;
-    const safeRespond = (payload) => {
-      try {
-        sendResponse(payload);
-      } catch (_error) {
-        // The popup may have closed mid-run; page-side T1 state is already saved.
-      }
-    };
-    if (isT1) {
-      t1RunState = "running";
-    }
-    operation().then((result) => {
-      if (isT1) {
-        lastT1Result = result;
-        t1RunState = "completed";
-      }
-      safeRespond(result);
-    }).catch((error) => {
-      const fallback = {
-        experiment: isT1 ? "artifact_capture" : "source_resync",
-        status: isT1 ? "BLOCKED" : "FAIL",
-        stage: "runtime",
-        errors: [error && typeof error.message === "string" ? clippedText(error.message, 180) : "UNEXPECTED_RUNTIME_ERROR"]
-      };
-      if (isT1) {
-        lastT1Result = fallback;
-        t1RunState = "completed";
-      }
-      safeRespond(fallback);
-    });
-    return true;
   };
 
   // Page-lifetime load guard (top of file) makes repeated or redundant

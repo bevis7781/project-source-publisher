@@ -806,13 +806,6 @@
         armActiveReceipt(data);
         return;
       }
-      if (data.command === "expireBootstrap") {
-        // Test/maintenance hook: force the absolute bootstrap lifetime to be
-        // expired (epoch sentinel = already past). Fail-safe direction only —
-        // it can only stop recording.
-        state.installExpiresAt = 1;
-        return;
-      }
     } catch (_error) {
       noteFailure();
     }
