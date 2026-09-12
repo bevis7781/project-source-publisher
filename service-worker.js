@@ -886,10 +886,30 @@ function project100MvpBindingV2AllBound(binding) {
 // binding completeness and connection-level sourceBound facts remain separate
 // from the durable establishment decision below.
 const PROJECT100_MVP_ESTABLISHMENT_SCHEMA_VERSION = 1;
+// A Source can be durably bound after the first Drive write while the
+// connector completion receipt for that original Add is still unavailable.
+// This is deliberately neither INITIALIZING nor ESTABLISHED: it is the
+// narrow bridge that permits a later explicit Publish without granting
+// establishment proof.
+const PROJECT100_MVP_BOUND_UNPROVEN_STATE = "BOUND_UNPROVEN";
 const PROJECT100_MVP_ESTABLISHMENT_STATES = new Set([
   "INITIALIZING",
+  PROJECT100_MVP_BOUND_UNPROVEN_STATE,
   "ESTABLISHED"
 ]);
+
+function project100MvpTransactionForLifecycleState(state) {
+  if (state === "ESTABLISHED") {
+    return "REFRESH";
+  }
+  if (state === "INITIALIZING") {
+    return "INITIALIZATION";
+  }
+  if (state === PROJECT100_MVP_BOUND_UNPROVEN_STATE) {
+    return "BOUND_RECONCILIATION";
+  }
+  return "";
+}
 
 function project100MvpEstablishmentRecord(binding) {
   const record = binding && binding.establishment;
@@ -958,7 +978,10 @@ function project100MvpBuildEstablishmentRecord(
     updatedAt: now,
     establishedAt: state === "ESTABLISHED"
       ? now
-      : (previous && previous.establishedAt ? String(previous.establishedAt) : "")
+      : (previous && previous.establishedAt ? String(previous.establishedAt) : ""),
+    establishmentProof: previous && previous.establishmentProof
+      ? previous.establishmentProof
+      : null
   };
 }
 
@@ -1010,6 +1033,151 @@ function project100MvpValidateInitializingBinding(binding) {
   };
 }
 
+// BOUND_UNPROVEN is a terminal, connection-level checkpoint for the narrow
+// INITIAL_COMPLETION_UNPROVEN case. It carries the original frozen operation
+// for audit/recovery, but a later explicit Publish is allowed to freeze a new
+// operation only after this exact binding is revalidated.
+function project100MvpValidateBoundUnprovenBinding(binding) {
+  const record = project100MvpEstablishmentRecord(binding);
+  if (!record || record.version !== PROJECT100_MVP_ESTABLISHMENT_SCHEMA_VERSION ||
+      record.state !== PROJECT100_MVP_BOUND_UNPROVEN_STATE ||
+      !project100MvpUniqueExactFilenames(record.initialFilenames) ||
+      !record.frozenArtifactOperation) {
+    throw new Error("SOURCE_NOT_ESTABLISHED");
+  }
+  const frozen = project100MvpNormalizeFrozenArtifactOperation(record.frozenArtifactOperation);
+  if (!project100MvpSameFilenameSet(
+      record.initialFilenames,
+      frozen.targets.map((target) => target.exactFilename))) {
+    throw new Error("ESTABLISHMENT_CONFLICT");
+  }
+  if (!binding || binding.version !== 2 || !binding.sourcePageUrl ||
+      !Array.isArray(binding.sources) ||
+      !project100MvpSameFilenameSet(
+        record.initialFilenames,
+        binding.sources.map((entry) => entry && entry.filename))) {
+    throw new Error("ESTABLISHMENT_CONFLICT");
+  }
+  const projectId = String(binding.projectId || "");
+  if (!projectId || String(record.projectId || "") !== projectId ||
+      !project100MvpProjectIdentityMatchesSourcePage(projectId, binding.sourcePageUrl)) {
+    throw new Error("ESTABLISHMENT_CONFLICT");
+  }
+  const filenames = new Set();
+  const driveIds = new Set();
+  for (const entry of binding.sources) {
+    if (!entry || entry.sourceBound !== true || !entry.sourceBoundAt ||
+        typeof entry.filename !== "string" || filenames.has(entry.filename)) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    const filename = project100MvpNormalizeLogicalFilename(entry.filename);
+    if (filename !== entry.filename) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    const driveFileId = project100MvpNormalizeDriveFileId(entry.driveFileId);
+    if (driveIds.has(driveFileId)) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    if (entry.completionIdentity &&
+        (String(entry.completionIdentity.projectId || "") !== projectId ||
+         String(entry.completionIdentity.connectorType || "") !==
+           PROJECT100_MVP_SOURCE_CONNECTOR_TYPE ||
+         String(entry.completionIdentity.canonicalHandle || "") !== driveFileId ||
+         !String(entry.completionIdentity.scopeId || ""))) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    filenames.add(filename);
+    driveIds.add(driveFileId);
+  }
+  return {
+    record,
+    frozen,
+    projectId,
+    filenames: record.initialFilenames.slice()
+  };
+}
+
+async function project100MvpMarkInitialCompletionUnproven(binding, projectId = "") {
+  const initializing = project100MvpValidateInitializingBinding(binding);
+  if (!project100MvpBindingV2Complete(binding) || !binding.sourcePageUrl ||
+      !project100MvpBindingV2AllBound(binding)) {
+    throw new Error("SOURCE_NOT_ESTABLISHED");
+  }
+  const record = project100MvpBuildEstablishmentRecord(
+    PROJECT100_MVP_BOUND_UNPROVEN_STATE,
+    initializing.projectId,
+    initializing.record.initialFilenames,
+    initializing.frozen,
+    initializing.record);
+  const nextBinding = {
+    ...binding,
+    establishment: record,
+    updatedAt: new Date().toISOString()
+  };
+  await project100MvpWriteBindingV2(
+    nextBinding,
+    projectId || initializing.projectId);
+  // Keep the recovery checkpoint's original operation identity for audit and
+  // same-operation reconciliation, while making its terminal lifecycle
+  // explicit for the next worker wake.
+  if (project100MvpRecoveryJob &&
+      project100MvpRecordProjectId(project100MvpRecoveryJob) === initializing.projectId) {
+    await project100MvpUpdateRecoveryJob({
+      lifecycleState: PROJECT100_MVP_BOUND_UNPROVEN_STATE,
+      transaction: "BOUND_RECONCILIATION",
+      establishment: record
+    }, initializing.projectId);
+  }
+  return nextBinding;
+}
+
+function project100MvpEstablishmentProofMap(record, projectId, binding) {
+  const proof = record && record.establishmentProof;
+  if (!proof || proof.version !== 1 || proof.kind !== "POST_INITIAL_PUBLISH" ||
+      String(proof.projectId || "") !== projectId ||
+      !Array.isArray(proof.sources) ||
+      !project100MvpSameFilenameSet(
+        record.initialFilenames,
+        proof.sources.map((entry) => entry && entry.filename))) {
+    return null;
+  }
+  const byFilename = new Map();
+  for (const entry of proof.sources) {
+    if (!entry || typeof entry.filename !== "string" || byFilename.has(entry.filename) ||
+        !/^[a-f0-9]{64}$/.test(String(entry.sha256 || "")) ||
+        !String(entry.completion || "")) {
+      return null;
+    }
+    const bound = Array.isArray(binding && binding.sources)
+      ? binding.sources.find((source) => source && source.filename === entry.filename)
+      : null;
+    if (!bound) {
+      return null;
+    }
+    let driveFileId = "";
+    try {
+      driveFileId = project100MvpNormalizeDriveFileId(entry.driveFileId);
+    } catch (_error) {
+      return null;
+    }
+    let boundDriveFileId = "";
+    try {
+      boundDriveFileId = project100MvpNormalizeDriveFileId(bound.driveFileId);
+    } catch (_error) {
+      return null;
+    }
+    if (driveFileId !== boundDriveFileId) {
+      return null;
+    }
+    byFilename.set(entry.filename, {
+      driveFileId,
+      sha256: String(entry.sha256),
+      completion: String(entry.completion)
+    });
+  }
+  return byFilename.size === record.initialFilenames.length ? byFilename : null;
+}
+
 // Established is proven only by this explicit durable state plus a
 // self-consistent exact binding set. No binding/allBound/sourceBound shortcut
 // can reach Refresh.
@@ -1038,6 +1206,8 @@ function project100MvpValidateEstablishedBinding(binding) {
   }
   const filenames = new Set();
   const driveIds = new Set();
+  const establishmentProof = project100MvpEstablishmentProofMap(
+    record, projectId, binding);
   for (const entry of binding.sources) {
     if (!entry || typeof entry.filename !== "string" ||
         !project100MvpUniqueExactFilenames([entry.filename]) ||
@@ -1053,12 +1223,16 @@ function project100MvpValidateEstablishedBinding(binding) {
       throw new Error("ESTABLISHMENT_CONFLICT");
     }
     const completionIdentity = entry.completionIdentity;
-    if (!completionIdentity ||
-        String(completionIdentity.projectId || "") !== projectId ||
-        String(completionIdentity.connectorType || "") !==
-          PROJECT100_MVP_SOURCE_CONNECTOR_TYPE ||
-        String(completionIdentity.canonicalHandle || "") !== driveFileId ||
-        !String(completionIdentity.scopeId || "")) {
+    const validCompletionIdentity = Boolean(completionIdentity &&
+      String(completionIdentity.projectId || "") === projectId &&
+      String(completionIdentity.connectorType || "") ===
+        PROJECT100_MVP_SOURCE_CONNECTOR_TYPE &&
+      String(completionIdentity.canonicalHandle || "") === driveFileId &&
+      String(completionIdentity.scopeId || ""));
+    if (!validCompletionIdentity && !establishmentProof) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    if (establishmentProof && !establishmentProof.has(entry.filename)) {
       throw new Error("ESTABLISHMENT_CONFLICT");
     }
     filenames.add(entry.filename);
@@ -2129,6 +2303,10 @@ function project100MvpRecoveryStateFields(job) {
     ? job.sources.find((entry) => entry && entry.driveMutationAccepted === true &&
       entry.driveMutationAt)
     : null;
+  const artifactScopeIndex = job.frozenArtifactOperation &&
+    Number.isInteger(job.frozenArtifactOperation.scopeIndex)
+    ? job.frozenArtifactOperation.scopeIndex
+    : -1;
   return {
     projectId: String(job.projectId || ""),
     recoveryJobId: String(job.jobId || ""),
@@ -2140,10 +2318,10 @@ function project100MvpRecoveryStateFields(job) {
       job.sources.some((entry) => entry && entry.driveMutationAccepted === true)),
     driveMutationAt: String(mutationSource && mutationSource.driveMutationAt || ""),
     recoveryQueueIndex: Number(job.currentIndex) || 0,
+    artifactScopeIndex,
     lifecycleState,
-    transaction: String(job.transaction || (lifecycleState === "ESTABLISHED"
-      ? "REFRESH"
-      : (lifecycleState === "INITIALIZING" ? "INITIALIZATION" : "")))
+    transaction: String(job.transaction ||
+      project100MvpTransactionForLifecycleState(lifecycleState))
   };
 }
 
@@ -2225,9 +2403,7 @@ async function project100MvpBeginRecoveryJob({
     // remain in content.js and disappear with document replacement/reload.
     frozenArtifactOperation: normalizedFrozenArtifactOperation,
     lifecycleState: normalizedLifecycleState,
-    transaction: normalizedLifecycleState === "ESTABLISHED"
-      ? "REFRESH"
-      : (normalizedLifecycleState === "INITIALIZING" ? "INITIALIZATION" : ""),
+    transaction: project100MvpTransactionForLifecycleState(normalizedLifecycleState),
     establishment,
     sources,
     currentIndex: 0,
@@ -3073,6 +3249,12 @@ function project100MvpPublishSnapshot(status, binding, fields) {
     driveGate: fields.driveGate || null,
     resyncEvidence: fields.resyncEvidence || null,
     completion: fields.completion || "",
+    completionIdentity: fields.completionIdentity || null,
+    artifactScopeIndex: Number.isInteger(fields.artifactScopeIndex)
+      ? fields.artifactScopeIndex
+      : (Number.isInteger(recoveryFields.artifactScopeIndex)
+        ? recoveryFields.artifactScopeIndex : -1),
+    initialCompletionUnproven: Boolean(fields.initialCompletionUnproven),
     // HY7: bounded Fresh Sources completion evidence (no raw attempt history
     // here — that stays in the separate diagnostics storage).
     freshSources: fields.freshSources || null
@@ -4260,6 +4442,9 @@ async function project100MvpCompleteInitializationFromNativeAdd(
   }
   const operationProjectId = project100MvpNormalizeProjectId(
     project100MvpActiveProjectId);
+  const completionProjectId = operationProjectId ||
+    project100MvpNormalizeProjectId(binding && binding.projectId) ||
+    project100MvpProjectSegmentOf(state && state.sourcePageUrl);
   const job = recoveryJobInput || project100MvpRecoveryJob ||
     await project100MvpReadRecoveryJob(operationProjectId);
   if (!job || String(job.establishment && job.establishment.state ||
@@ -4333,7 +4518,14 @@ async function project100MvpCompleteInitializationFromNativeAdd(
     if (!entry) {
       throw new Error("INITIAL_COMPLETION_UNPROVEN");
     }
-    entry.completionIdentity = item.identity;
+    const completionIdentity = project100MvpNormalizeCompletionIdentity(
+      item.identity,
+      completionProjectId,
+      entry.driveFileId);
+    if (!completionIdentity) {
+      throw new Error("INITIAL_COMPLETION_UNPROVEN");
+    }
+    entry.completionIdentity = completionIdentity;
   }
   binding.updatedAt = new Date().toISOString();
   await project100MvpWriteBindingV2(binding, operationProjectId);
@@ -4342,7 +4534,8 @@ async function project100MvpCompleteInitializationFromNativeAdd(
     driveFileId: item.driveFileId,
     synced: true,
     resynced: false,
-    completionIdentity: identities.find((entry) => entry.filename === item.filename).identity
+    completionIdentity: binding.sources.find((entry) => entry.filename === item.filename)
+      .completionIdentity
   }));
   const establishedBinding = await project100MvpCommitEstablishedInitialization(
     job, filenames, saved, syncResults);
@@ -4411,6 +4604,15 @@ async function project100MvpOnboardingProceed(message) {
     if (lifecycleState === "ESTABLISHED") {
       project100MvpValidateEstablishedBinding(binding);
       // Binding already complete: nothing pending.
+      await project100MvpClearOnboardingState(projectId);
+      return { status: "PASS", onboarding: null };
+    }
+    if (lifecycleState === PROJECT100_MVP_BOUND_UNPROVEN_STATE) {
+      // A terminal first-Add proof gap is not an onboarding invitation. The
+      // exact bound Source remains eligible for a later Publish, but this
+      // stale Continue action must never reopen Copy/Add or create another
+      // Source.
+      project100MvpValidateBoundUnprovenBinding(binding);
       await project100MvpClearOnboardingState(projectId);
       return { status: "PASS", onboarding: null };
     }
@@ -4599,6 +4801,7 @@ async function project100MvpOnboardingSourceDetected(message, sender) {
     String(recoveryForNativeCompletion.establishment &&
       recoveryForNativeCompletion.establishment.state ||
       recoveryForNativeCompletion.lifecycleState || "") === "INITIALIZING");
+  let initialCompletionBindingMarked = false;
   // The natural First Add proof may finish without another artifact capture,
   // but it must not turn a lost page-lifetime target into an implicit
   // recovery.  The original capture document is the authority for the frozen
@@ -4620,8 +4823,24 @@ async function project100MvpOnboardingSourceDetected(message, sender) {
     nativeCompletion = await project100MvpCompleteInitializationFromNativeAdd(
       state, binding, onboardingTabId, recoveryForNativeCompletion);
     if (!nativeCompletion || nativeCompletion.status !== "PASS") {
+      const initialCompletionUnproven = !nativeCompletion ||
+        String(nativeCompletion.error || "") === "INITIAL_COMPLETION_UNPROVEN";
+      const terminalError = initialCompletionUnproven
+        ? "INITIAL_COMPLETION_UNPROVEN"
+        : String(nativeCompletion.error || "INITIAL_COMPLETION_UNPROVEN");
       await project100MvpFinishRecoveryJob(
-        "failed", "INITIAL_COMPLETION_UNPROVEN", projectId);
+        "failed", terminalError, projectId);
+      if (initialCompletionUnproven) {
+        try {
+          await project100MvpMarkInitialCompletionUnproven(binding, projectId);
+          initialCompletionBindingMarked = true;
+        } catch (_error) {
+          // The first-operation outcome stays truthful even if the narrow
+          // future-publish marker cannot be persisted. Without that marker
+          // the later path remains fail-closed rather than guessing a
+          // binding.
+        }
+      }
       const failedState = project100MvpPublishSnapshot("failed", {
         filename: queue.map((item) => item.filename)[0] || "",
         driveFileId: queue[0] ? queue[0].driveFileId : ""
@@ -4630,13 +4849,14 @@ async function project100MvpOnboardingSourceDetected(message, sender) {
         sha256: "",
         driveUpdated: true,
         resynced: false,
-        error: "INITIAL_COMPLETION_UNPROVEN",
+        error: terminalError,
         partialMessage: "首次添加已完成，但当前 Source completion 无法证明",
         publishedAt: "",
         fileCount: queue.length,
         filesSaved: 0,
         lifecycleState: "INITIALIZING",
         transaction: "INITIALIZATION",
+        initialCompletionUnproven: initialCompletionBindingMarked,
         perSource: project100MvpRecoverySourcesForPublishState(project100MvpRecoveryJob)
       });
       await project100MvpWritePublishState(failedState, projectId);
@@ -4714,7 +4934,9 @@ async function project100MvpRunPublish(options = {}) {
   let previousPublishState = null;
   let lifecycleState = "UNKNOWN";
   let lifecycleInfo = null;
+  let boundUnprovenInfo = null;
   let establishedInfo = null;
+  let postInitialNewOperation = false;
   const perSource = [];
   try {
     // Capture tab: the explicitly resumed tab (auto-resumed onboarding
@@ -4760,6 +4982,8 @@ async function project100MvpRunPublish(options = {}) {
     lifecycleState = project100MvpEstablishmentState(binding);
     if (binding && lifecycleState === "INITIALIZING") {
       lifecycleInfo = project100MvpValidateInitializingBinding(binding);
+    } else if (binding && lifecycleState === PROJECT100_MVP_BOUND_UNPROVEN_STATE) {
+      boundUnprovenInfo = project100MvpValidateBoundUnprovenBinding(binding);
     } else if (binding && lifecycleState === "ESTABLISHED") {
       establishedInfo = project100MvpValidateEstablishedBinding(binding);
     } else if (binding) {
@@ -4857,10 +5081,13 @@ async function project100MvpRunPublish(options = {}) {
     }
 
     pendingIntent = await project100MvpReadOnboardingState(project100MvpActiveProjectId);
+    const postInitialBinding = lifecycleState === PROJECT100_MVP_BOUND_UNPROVEN_STATE &&
+      Boolean(boundUnprovenInfo);
     const pendingFrozen = pendingIntent && pendingIntent.frozenArtifactOperation
       ? pendingIntent.frozenArtifactOperation
       : null;
     const retryFrozen = previousRecoveryJob &&
+      !postInitialBinding &&
       (previousRecoveryJob.retryable || project100MvpRecoveryIsActiveJob(previousRecoveryJob))
       ? previousRecoveryJob.frozenArtifactOperation
       : null;
@@ -4869,7 +5096,7 @@ async function project100MvpRunPublish(options = {}) {
       : null;
     const continuationRequiresFrozen = Boolean(
       options.resumedFromOnboarding || pendingIntent ||
-      (retryingRecovery && previousRecoveryJob) ||
+      (!postInitialBinding && retryingRecovery && previousRecoveryJob) ||
       (binding && lifecycleState === "INITIALIZING"));
     const reusableFrozen = pendingFrozen || retryFrozen || lifecycleFrozen || null;
     if (reusableFrozen) {
@@ -4904,10 +5131,38 @@ async function project100MvpRunPublish(options = {}) {
 
     // Current operation identity was frozen once at Publish start. Capture
     // never re-runs page status or selects a same-name occurrence.
+    const hadReusableFrozen = Boolean(frozenArtifactOperation);
     if (!frozenArtifactOperation) {
       frozenArtifactOperation = await project100MvpFreezeArtifactOperation(captureTab.id);
     }
     filenames = frozenArtifactOperation.targets.map((target) => target.exactFilename);
+
+    if (postInitialBinding && !hadReusableFrozen) {
+      const baselineScopeIndex = Number(previousPublishState &&
+        previousPublishState.artifactScopeIndex);
+      const candidateScopeIndex = Number(frozenArtifactOperation.scopeIndex);
+      const hasNewScope = Number.isInteger(baselineScopeIndex) &&
+        baselineScopeIndex >= 0 && Number.isInteger(candidateScopeIndex) &&
+        candidateScopeIndex > baselineScopeIndex;
+      if (retryingRecovery && previousRecoveryJob && !hasNewScope) {
+        // Same-operation Retry remains bound to the old durable target. The
+        // exploratory current-scope freeze above is identity-only; it never
+        // authorizes mutation and is discarded here.
+        if (!previousRecoveryJob.frozenArtifactOperation) {
+          throw new Error("ARTIFACT_TARGET_LOST");
+        }
+        frozenArtifactOperation = project100MvpNormalizeFrozenArtifactOperation(
+          previousRecoveryJob.frozenArtifactOperation);
+        filenames = frozenArtifactOperation.targets.map((target) => target.exactFilename);
+      } else {
+        if (!hasNewScope || !retryingRecovery ||
+            !project100MvpSameFilenameSet(
+              boundUnprovenInfo.filenames, filenames)) {
+          throw new Error("NEW_ARTIFACT_REQUIRED");
+        }
+        postInitialNewOperation = true;
+      }
+    }
 
     if (lifecycleState === "INITIALIZING") {
       project100MvpAssertInitialFrozenOperation(
@@ -4946,7 +5201,10 @@ async function project100MvpRunPublish(options = {}) {
       : [];
     const refreshFilenames = initialization
       ? filenames.slice()
-      : filenames.filter((filename) => establishedInfo.filenames.includes(filename));
+      : filenames.filter((filename) => {
+        const allowed = establishedInfo || boundUnprovenInfo;
+        return Boolean(allowed && allowed.filenames.includes(filename));
+      });
     const unmatchedFilenames = initialization
       ? []
       : filenames.filter((filename) => !refreshFilenames.includes(filename));
@@ -4961,12 +5219,14 @@ async function project100MvpRunPublish(options = {}) {
     const explicitDriveWorkNeedsAuth = refreshFilenames.length > 0 &&
       !options.resumedFromOnboarding &&
       (lifecycleState === "ESTABLISHED" ||
-        (lifecycleState === "INITIALIZING" && unboundFilenames.length === 0));
+        (lifecycleState === "INITIALIZING" && unboundFilenames.length === 0) ||
+        lifecycleState === PROJECT100_MVP_BOUND_UNPROVEN_STATE);
     if (explicitDriveWorkNeedsAuth) {
       await project100MvpGetAuthToken(true);
     }
     const preservePreviousOperation = Boolean(previousRecoveryJob &&
-      (retryingRecovery || options.resumedFromOnboarding || pendingIntent ||
+      (retryingRecovery && !postInitialNewOperation ||
+        options.resumedFromOnboarding || pendingIntent ||
         lifecycleState === "INITIALIZING"));
     const recoveryJob = await project100MvpBeginRecoveryJob({
       phase: "publishing",
@@ -4975,12 +5235,12 @@ async function project100MvpRunPublish(options = {}) {
       captureTabId: captureTab.id,
       filenames,
       previousJob: preservePreviousOperation ? previousRecoveryJob : null,
-      preserveConfirmed: retryingRecovery,
+      preserveConfirmed: retryingRecovery && !postInitialNewOperation,
       frozenArtifactOperation,
       lifecycleState,
       initialFilenames: initialization
         ? lifecycleInfo.record.initialFilenames
-        : establishedInfo.filenames
+        : (establishedInfo || boundUnprovenInfo).filenames
     });
 
     for (const filename of unmatchedFilenames) {
@@ -5020,7 +5280,7 @@ async function project100MvpRunPublish(options = {}) {
       fileCount: filenames.length,
       filesSaved: 0,
       lifecycleState,
-      transaction: initialization ? "INITIALIZATION" : "REFRESH",
+      transaction: project100MvpTransactionForLifecycleState(lifecycleState),
       perSource: perSource.length > 0
         ? perSource
         : project100MvpRecoverySourcesForPublishState(recoveryJob)
@@ -5041,8 +5301,8 @@ async function project100MvpRunPublish(options = {}) {
         publishedAt: "",
         fileCount: filenames.length,
         filesSaved: 0,
-        lifecycleState: "ESTABLISHED",
-        transaction: "REFRESH",
+        lifecycleState,
+        transaction: project100MvpTransactionForLifecycleState(lifecycleState),
         perSource
       });
       await project100MvpWritePublishState(failedState);
@@ -5396,7 +5656,7 @@ async function project100MvpRunPublish(options = {}) {
           fileCount: filenames.length,
           filesSaved: saved.length,
           lifecycleState,
-          transaction: initialization ? "INITIALIZATION" : "REFRESH",
+          transaction: project100MvpTransactionForLifecycleState(lifecycleState),
           perSource,
           captureDiagnostics,
           driveGate
@@ -5445,7 +5705,7 @@ async function project100MvpRunPublish(options = {}) {
       fileCount: filenames.length,
       filesSaved: saved.length,
       lifecycleState,
-      transaction: initialization ? "INITIALIZATION" : "REFRESH",
+      transaction: project100MvpTransactionForLifecycleState(lifecycleState),
       perSource,
       captureDiagnostics,
       driveGate
@@ -5529,8 +5789,7 @@ async function project100MvpRunPublish(options = {}) {
       filesSaved: 0,
       retryable: true,
       lifecycleState: effectiveLifecycleState,
-      transaction: effectiveLifecycleState === "INITIALIZING" ? "INITIALIZATION" :
-        (effectiveLifecycleState === "ESTABLISHED" ? "REFRESH" : ""),
+      transaction: project100MvpTransactionForLifecycleState(effectiveLifecycleState),
       perSource: failurePerSource,
       captureDiagnostics,
       driveGate
@@ -5593,6 +5852,136 @@ async function project100MvpCommitEstablishedInitialization(
   return establishedBinding;
 }
 
+function project100MvpNormalizeCompletionIdentity(rawInput, projectId, driveFileId) {
+  const raw = rawInput && typeof rawInput === "object" ? rawInput : {};
+  const expectedProjectId = String(projectId || "");
+  const expectedDriveFileId = String(driveFileId || "");
+  const normalizedProjectId = String(raw.projectId || "");
+  const normalizedDriveFileId = String(raw.canonicalHandle || "");
+  const scopeId = String(raw.scopeId || "");
+  if (!expectedProjectId || !expectedDriveFileId ||
+      normalizedProjectId !== expectedProjectId ||
+      String(raw.connectorType || "") !== PROJECT100_MVP_SOURCE_CONNECTOR_TYPE ||
+      normalizedDriveFileId !== expectedDriveFileId || !scopeId) {
+    return null;
+  }
+  return {
+    projectId: normalizedProjectId,
+    connectorType: PROJECT100_MVP_SOURCE_CONNECTOR_TYPE,
+    canonicalHandle: normalizedDriveFileId,
+    scopeId,
+    createdAt: String(raw.createdAt || raw.created_at || ""),
+    startedAt: String(raw.startedAt || raw.last_sync_started_at || ""),
+    completedAt: String(raw.completedAt || raw.last_sync_completed_at || "")
+  };
+}
+
+const PROJECT100_MVP_POST_UPDATE_COMPLETION_LABELS = new Set([
+  "dom-state-changed",
+  "fresh-sources-completed",
+  "background-dom",
+  "receipt"
+]);
+
+function project100MvpPostUpdateCompletionLabel(result) {
+  const evidence = result && result.resyncEvidence &&
+    typeof result.resyncEvidence === "object"
+    ? result.resyncEvidence : {};
+  const label = String(evidence.completion || "");
+  if (PROJECT100_MVP_POST_UPDATE_COMPLETION_LABELS.has(label)) {
+    return label;
+  }
+  if (result && result.freshSources && typeof result.freshSources === "object") {
+    return "fresh-sources-completed";
+  }
+  if (result && result.completionIdentity) {
+    return "receipt";
+  }
+  return "";
+}
+
+// A later bounded update can establish the Project after the original Add's
+// receipt was unavailable. The proof is earned only from the normal terminal
+// Resync result, and it preserves the exact new operation/hash per Source.
+async function project100MvpCommitEstablishedBoundUnproven(
+  jobInput, filenames, saved, syncResults
+) {
+  const job = jobInput || project100MvpRecoveryJob;
+  const operationProjectId = project100MvpNormalizeProjectId(
+    project100MvpActiveProjectId);
+  if (!job || !Array.isArray(job.sources) ||
+      String(job.establishment && job.establishment.state ||
+        job.lifecycleState || "") !== PROJECT100_MVP_BOUND_UNPROVEN_STATE ||
+      !Array.isArray(filenames) || !Array.isArray(saved) ||
+      !Array.isArray(syncResults) || saved.length !== filenames.length ||
+      syncResults.length !== filenames.length ||
+      syncResults.some((result) => !result || result.synced !== true)) {
+    throw new Error("ESTABLISHMENT_CONFLICT");
+  }
+  const binding = await project100MvpReadBindingV2(operationProjectId);
+  const bound = project100MvpValidateBoundUnprovenBinding(binding);
+  if (!project100MvpSameFilenameSet(bound.filenames, filenames)) {
+    throw new Error("ESTABLISHMENT_CONFLICT");
+  }
+  const proofSources = [];
+  for (const item of saved) {
+    const result = syncResults.find((entry) => entry.filename === item.filename);
+    const entry = binding.sources.find((source) => source.filename === item.filename);
+    if (!result || !entry || String(entry.driveFileId) !== String(item.driveFileId)) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    const completion = project100MvpPostUpdateCompletionLabel(result);
+    if (!completion || !/^[a-f0-9]{64}$/.test(String(item.sha256 || ""))) {
+      throw new Error("ESTABLISHMENT_CONFLICT");
+    }
+    if (result.completionIdentity) {
+      const completionIdentity = project100MvpNormalizeCompletionIdentity(
+        result.completionIdentity,
+        bound.projectId,
+        entry.driveFileId);
+      if (!completionIdentity) {
+        throw new Error("ESTABLISHMENT_CONFLICT");
+      }
+      entry.completionIdentity = completionIdentity;
+    }
+    proofSources.push({
+      filename: item.filename,
+      driveFileId: entry.driveFileId,
+      sha256: String(item.sha256),
+      completion
+    });
+  }
+  const establishedRecord = project100MvpBuildEstablishmentRecord(
+    "ESTABLISHED",
+    bound.projectId,
+    bound.record.initialFilenames,
+    bound.record.frozenArtifactOperation,
+    bound.record);
+  establishedRecord.establishmentProof = {
+    version: 1,
+    kind: "POST_INITIAL_PUBLISH",
+    projectId: bound.projectId,
+    operationToken: String(job.frozenArtifactOperation &&
+      job.frozenArtifactOperation.frozenOperationToken || ""),
+    sources: proofSources
+  };
+  const establishedBinding = {
+    ...binding,
+    establishment: establishedRecord,
+    updatedAt: new Date().toISOString()
+  };
+  // Validate the complete durable proof before crossing the ESTABLISHED
+  // boundary. sourceBound/allBound alone cannot satisfy this validator.
+  project100MvpValidateEstablishedBinding(establishedBinding);
+  await project100MvpWriteBindingV2(establishedBinding, operationProjectId);
+  await project100MvpUpdateRecoveryJob({
+    lifecycleState: "ESTABLISHED",
+    transaction: "REFRESH",
+    establishment: establishedRecord
+  }, operationProjectId);
+  return establishedBinding;
+}
+
 async function project100MvpRunBatchResyncAndFinalize(binding, saved, perSource,
   filenames, diagnostics = {}) {
   const syncResults = await project100MvpRunBatchResyncPhase(binding, saved, perSource);
@@ -5606,6 +5995,13 @@ async function project100MvpRunBatchResyncAndFinalize(binding, saved, perSource,
         project100MvpRecoveryJob.lifecycleState || "") === "INITIALIZING";
     if (initialization) {
       await project100MvpCommitEstablishedInitialization(
+        project100MvpRecoveryJob, filenames, saved, syncResults);
+    } else if (project100MvpRecoveryJob &&
+        String(project100MvpRecoveryJob.establishment &&
+          project100MvpRecoveryJob.establishment.state ||
+          project100MvpRecoveryJob.lifecycleState || "") ===
+          PROJECT100_MVP_BOUND_UNPROVEN_STATE) {
+      await project100MvpCommitEstablishedBoundUnproven(
         project100MvpRecoveryJob, filenames, saved, syncResults);
     }
     await project100MvpFinishRecoveryJob("published");
@@ -5703,6 +6099,7 @@ async function project100MvpRunBatchResyncPhase(binding, saved, perSource) {
         error: "",
         resyncEvidence: null,
         freshSources: null,
+        completionIdentity: recoverySource.completionIdentity || null,
         byteLength: item.byteLength,
         sha256: item.sha256
       });
@@ -5772,6 +6169,8 @@ async function project100MvpRunBatchResyncPhase(binding, saved, perSource) {
       resyncClickCount,
       byteLength: item.byteLength,
       sha256: item.sha256,
+      completionIdentity: sideState && sideState.completionIdentity
+        ? sideState.completionIdentity : null,
       error: sideState && sideState.status === "failed" ? sideState.error : ""
     });
     await project100MvpUpdateRecoveryJob({
@@ -5787,6 +6186,8 @@ async function project100MvpRunBatchResyncPhase(binding, saved, perSource) {
       // user-facing final state keeps the frozen evidence shape.
       resyncEvidence: (sideState && sideState.resyncEvidence) || null,
       freshSources: (sideState && sideState.freshSources) || null,
+      completionIdentity: sideState && sideState.completionIdentity
+        ? sideState.completionIdentity : null,
       byteLength: item.byteLength,
       sha256: item.sha256
     });

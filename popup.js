@@ -308,6 +308,72 @@
     }
   }
 
+  function sameFilenameSet(left, right) {
+    const leftNames = uniqueFilenames(left);
+    const rightNames = uniqueFilenames(right);
+    if (leftNames.length === 0 || leftNames.length !== rightNames.length) {
+      return false;
+    }
+    const rightSet = new Set(rightNames);
+    return leftNames.every((filename) => rightSet.has(filename));
+  }
+
+  // A terminal completion gap may reopen a genuinely newer artifact, but only
+  // when the durable binding itself still proves the exact Project, filename
+  // set, bound Sources and distinct Drive identities. This is intentionally a
+  // UI eligibility hint; the service worker repeats the stronger validation
+  // immediately before any mutation.
+  function isBoundUnprovenNewRevision({ page, binding, publishState } = {}) {
+    if (!page || !page.isProject || !binding || binding.version !== 2 ||
+        !publishState || publishState.status !== "failed" ||
+        publishState.driveUpdated !== true) {
+      return false;
+    }
+    const record = binding.establishment;
+    if (!record || record.version !== 1 || record.state !== "BOUND_UNPROVEN" ||
+        !binding.sourcePageUrl ||
+        projectSegmentOfUrl(binding.sourcePageUrl) !== String(page.projectSegment || "")) {
+      return false;
+    }
+    const bindingProjectId = String(binding.projectId || "");
+    if (bindingProjectId && bindingProjectId !== String(page.projectSegment || "") &&
+        bindingProjectId !== projectSegmentOfUrl(binding.sourcePageUrl)) {
+      return false;
+    }
+    if (!Array.isArray(binding.sources) || binding.sources.length === 0 ||
+        !sameFilenameSet(record.initialFilenames, binding.sources)) {
+      return false;
+    }
+    const driveIds = new Set();
+    for (const entry of binding.sources) {
+      if (!entry || !sourceFilename(entry) || !entry.driveFileId ||
+          entry.sourceBound !== true || !entry.sourceBoundAt ||
+          driveIds.has(String(entry.driveFileId))) {
+        return false;
+      }
+      driveIds.add(String(entry.driveFileId));
+    }
+    const artifact = page.artifact || {};
+    const currentNames = artifactFilenames(artifact);
+    const count = artifactCount(artifact);
+    const baselineScopeIndex = Number(publishState.artifactScopeIndex);
+    const winningScopeIndex = Number(artifact.winningScopeIndex);
+    const completionGap = isInitialCompletionUnprovenPostSave(publishState) ||
+      (publishState.lifecycleState === "BOUND_UNPROVEN" &&
+        publishState.transaction === "BOUND_RECONCILIATION" &&
+        new Set([
+          "PROJECT_SOURCE_SYNC_UNCONFIRMED",
+          "BACKEND_RECEIPT_UNAVAILABLE",
+          "POST_SYNC_SETTLE_TIMEOUT",
+          "SYNC_STATE_UNCHANGED"
+        ]).has(String(publishState.error || "")));
+    return completionGap && artifact.error === "" && (artifact.invalid || 0) === 0 &&
+      Number.isInteger(baselineScopeIndex) && baselineScopeIndex >= 0 &&
+      Number.isInteger(winningScopeIndex) && winningScopeIndex > baselineScopeIndex &&
+      count === currentNames.length && count > 0 &&
+      sameFilenameSet(currentNames, binding.sources);
+  }
+
   // Product-state machine (multi-source v1). Inputs:
   //   page         — null | { isProject, projectSegment, artifact:{count, filename, filenames, invalid, error} }
   //   binding      — stored V2 Project binding or null
@@ -318,6 +384,16 @@
   function deriveProductState({ page, binding, onboarding, publishState } = {}) {
     const bound = bindingComplete(binding);
     const status = publishState && publishState.status;
+    if (isBoundUnprovenNewRevision({ page, binding, publishState })) {
+      const artifact = page.artifact || {};
+      const filenames = artifactFilenames(artifact);
+      const count = artifactCount(artifact);
+      return {
+        state: "F",
+        filename: count === 1 ? (artifact.filename || filenames[0] || "") : "",
+        count
+      };
+    }
     if (status === "publishing" || status === "syncing" ||
         status === "published" || status === "failed" || status === "interrupted") {
       return { state: "G", status };
@@ -841,6 +917,7 @@
     deriveSourceProgress,
     mapFailureCopy,
     isInitialCompletionUnprovenPostSave,
+    isBoundUnprovenNewRevision,
     localizeDateTime
   };
   if (typeof globalThis !== "undefined") {
@@ -1091,6 +1168,9 @@
     const jobRunning = publishJobRunning();
     const isJob = derived.state === "G";
     const confirmationUnavailable = isInitialCompletionUnprovenPostSave(publishState);
+    const newPostInitialRevision = isBoundUnprovenNewRevision({
+      page, binding, publishState
+    });
 
     renderDiscovery();
     renderSourceProgress();
@@ -1185,8 +1265,8 @@
 
     if (face === "publish") {
       const publishButton = $("publish");
-      publishButton.textContent = (view.retry ||
-        (publishState && publishState.status === "failed" && !confirmationUnavailable))
+      publishButton.textContent = (!newPostInitialRevision && (view.retry ||
+        (publishState && publishState.status === "failed" && !confirmationUnavailable)))
         ? t.retryPublish
         : t.publish;
       publishButton.disabled = busy || jobRunning || rescanBusy;

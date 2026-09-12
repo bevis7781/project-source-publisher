@@ -3554,6 +3554,7 @@
       documentInstanceId,
       frozenScopeToken,
       frozenOperationToken,
+      scopeIndex: discovery.scopeIndex,
       targets: publicTargets
     };
   }
