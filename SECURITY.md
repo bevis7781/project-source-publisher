@@ -2,21 +2,20 @@
 
 ## Supported versions
 
-Once the project is published, the latest public release and the default
-branch are the supported versions. Older releases may not receive security
-fixes.
+The default branch is supported during the public beta. Once versioned
+releases are available, the latest public release is also supported. Older
+releases may not receive security fixes.
 
 ## Reporting a vulnerability
 
-Please use GitHub Private Vulnerability Reporting for this repository once it
-is enabled.
+Please [report a vulnerability privately through GitHub](https://github.com/bevis7781/project-source-publisher/security/advisories/new).
 
 Do not publish passwords, cookies, OAuth tokens, authorization headers, private
 Drive links, private ChatGPT Project URLs, or conversation contents in a
 public issue or public security report.
 
-If private reporting is unavailable, use the maintainer support contact
-published with the repository and do not paste secrets into a public issue.
+If private reporting is temporarily unavailable, do not post vulnerability
+details publicly; retry the private reporting link later.
 
 Reports should include reproduction steps using non-sensitive test data, the
 affected version or commit, and the expected and observed behavior. Remove or

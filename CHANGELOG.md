@@ -2,7 +2,7 @@
 
 ## 0.3.1 — GitHub Public Beta (2026-09-12)
 
-The 0.3.1 source baseline is publicly available at https://github.com/bevis7781/project-source-publisher. Microsoft Edge Add-ons distribution is still being prepared; no supported public install link exists yet. Chrome Web Store distribution is planned later.
+Published the 0.3.1 source baseline on GitHub. See the [README](README.md#availability) for current store and installation availability.
 
 ### User-facing changes
 
@@ -12,4 +12,3 @@ The 0.3.1 source baseline is publicly available at https://github.com/bevis7781/
 - Added automatic ChatGPT Project context and identity-checked reinstall recovery.
 - Added per-file progress and a truthful confirmation-unavailable state when a Drive save cannot be confirmed from the ChatGPT page.
 - Kept English and Chinese interfaces.
-- Initial Microsoft Edge Add-ons distribution is being prepared; GitHub Public Beta source is live, while Chrome Web Store distribution is planned later.
