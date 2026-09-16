@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Project Source Publisher",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Publish Markdown files to ChatGPT Project Sources with guided first-time connection and exact-filename updates.",
   "action": {
     "default_title": "Project Source Publisher",

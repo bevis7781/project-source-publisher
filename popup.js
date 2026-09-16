@@ -299,9 +299,11 @@
   function projectSegmentOfUrl(urlValue) {
     try {
       const url = new URL(String(urlValue || ""));
-      // Same segment class as the production network-observer match pattern
-      // (g-p- ids may contain hyphens).
-      const match = url.pathname.match(/\/g\/(g-p-[A-Za-z0-9-]+)(?:\/|$|\?)/);
+      // Canonical Project id only. ChatGPT can append a human-readable
+      // "-<slug>" to the project segment in the path; the slug is not part of
+      // the Project identity and must never reach a storage namespace, or the
+      // same Project would be read under a different key than it was written.
+      const match = url.pathname.match(/\/g\/(g-p-[A-Za-z0-9]+)/);
       return match ? match[1] : "";
     } catch (_error) {
       return "";
@@ -990,6 +992,7 @@
 
   let lang = "en";
   let binding = null;
+  let bindingConflict = false;
   let onboarding = null;
   let publishState = null;
   let page = null;
@@ -1537,6 +1540,7 @@
   async function refreshBinding() {
     if (!currentProjectId) {
       binding = null;
+      bindingConflict = false;
       return;
     }
     const result = await runtimeMessage({
@@ -1544,6 +1548,9 @@
       projectId: currentProjectId
     });
     binding = result.binding || null;
+    // The worker reports a provably ambiguous legacy namespace explicitly. That
+    // is not "no Project": it must never be rendered as a first publish.
+    bindingConflict = Boolean(result && result.conflict);
   }
 
   async function refreshPublishState() {
@@ -1658,6 +1665,11 @@
       await refreshPublishState();
     } catch (_error) {
       publishState = null;
+    }
+    if (bindingConflict && !publishState) {
+      // Truthful blocked receipt for an ambiguous legacy Project: keeps the
+      // retry affordance and never claims this is a first publish.
+      publishState = blockedPublishState({ error: "LEGACY_PROJECT_STATE_CONFLICT" });
     }
     await refreshOnboarding();
   }

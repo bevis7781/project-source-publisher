@@ -367,6 +367,339 @@ function project100MvpAssertStateProject(projectId, value) {
   return requested || stored;
 }
 
+// A pre-repair 0.3.2 runtime namespaced Project state by the slug-inclusive
+// path segment ("g-p-<id>-<slug>"), so a legacy record can live under a
+// different scoped key than the canonical Project id used from now on. Only
+// the exact canonical id is ever derived: "g-p-<id>-<slug>" -> "g-p-<id>".
+function project100MvpCanonicalScopedProjectId(value) {
+  const match = String(value || "").match(/^(g-p-[A-Za-z0-9]+)/);
+  return match ? match[1] : "";
+}
+
+// The canonical Project a record proves it belongs to. A legacy record carries
+// the slugged identity in its own fields (projectId, establishment.projectId,
+// sourcePageUrl, …), so the proof must be compared canonically rather than as a
+// raw string equality.
+function project100MvpRecordCanonicalProjectId(record) {
+  return project100MvpCanonicalScopedProjectId(
+    project100MvpRecordProjectId(record));
+}
+
+// Replace a slugged Project path segment with the canonical one, keeping every
+// other URL part intact.
+function project100MvpCanonicalizeProjectUrl(urlValue) {
+  const canonical = project100MvpProjectSegmentOf(urlValue);
+  const raw = String(urlValue || "");
+  if (!canonical || !raw) {
+    return raw;
+  }
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname.replace(/\/g\/g-p-[A-Za-z0-9-]+/, `/g/${canonical}`)}${url.search}`;
+  } catch (_error) {
+    return raw;
+  }
+}
+
+// A legacy record carries the slugged identity in its own fields, and several
+// readers compare those fields strictly (project context assertions, popup
+// eligibility, recovery continuation). The adopted copy is therefore
+// normalized so the canonical namespace holds canonical data. The legacy entry
+// itself stays byte-identical — adoption copies, it never moves or rewrites.
+function project100MvpCanonicalizeRecordIdentity(value) {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const canonical = project100MvpRecordCanonicalProjectId(value);
+  if (!canonical) {
+    return value;
+  }
+  const next = { ...value };
+  if (next.projectId) {
+    next.projectId = canonical;
+  }
+  if (next.establishment && typeof next.establishment === "object") {
+    next.establishment = { ...next.establishment };
+    if (next.establishment.projectId) {
+      next.establishment.projectId = canonical;
+    }
+    // The establishment proof is nested inside the establishment record.
+    const proof = next.establishment.establishmentProof;
+    if (proof && typeof proof === "object") {
+      next.establishment.establishmentProof = { ...proof };
+      if (next.establishment.establishmentProof.projectId) {
+        next.establishment.establishmentProof.projectId = canonical;
+      }
+    }
+  }
+  if (next.establishmentProof && typeof next.establishmentProof === "object") {
+    next.establishmentProof = { ...next.establishmentProof };
+    if (next.establishmentProof.projectId) {
+      next.establishmentProof.projectId = canonical;
+    }
+  }
+  for (const field of ["sourcePageUrl", "projectUrl", "captureTabUrl"]) {
+    if (next[field]) {
+      next[field] = project100MvpCanonicalizeProjectUrl(next[field]);
+    }
+  }
+  return next;
+}
+
+// Legacy slugged project-scoped keys actually present in local storage, e.g.
+// "project100MvpBindingV2:project:g-p-<id>-<slug>". Enumerating local storage is
+// comparatively expensive, so the key set is discovered once per worker; the
+// canonical Project-id extraction guarantees no new slugged key is written
+// after this repair, so the discovered set cannot go stale in a repaired build.
+let project100MvpLegacySluggedKeyCache = null;
+
+async function project100MvpLegacySluggedKeys() {
+  if (project100MvpLegacySluggedKeyCache) {
+    return project100MvpLegacySluggedKeyCache;
+  }
+  const found = [];
+  try {
+    const all = await chrome.storage.local.get(null);
+    for (const key of Object.keys(all || {})) {
+      const marker = key.indexOf(PROJECT100_MVP_PROJECT_NAMESPACE_MARKER);
+      if (marker < 0) {
+        continue;
+      }
+      let scopedId = "";
+      try {
+        scopedId = decodeURIComponent(
+          key.slice(marker + PROJECT100_MVP_PROJECT_NAMESPACE_MARKER.length));
+      } catch (_error) {
+        continue;
+      }
+      const canonical = project100MvpCanonicalScopedProjectId(scopedId);
+      if (canonical && canonical !== scopedId) {
+        found.push({ key, baseKey: key.slice(0, marker), canonical });
+      }
+    }
+  } catch (_error) {
+    // An enumeration failure proves nothing about any Project: adopt none.
+  }
+  project100MvpLegacySluggedKeyCache = found;
+  return found;
+}
+
+// Only the durable records that decide Project identity, popup state and
+// recovery eligibility are adopted. Transient single-shot work intents
+// (onboarding state, source-create intent) are deliberately NOT resurrected:
+// re-opening a one-time Source Add whose Source may already exist is worse than
+// a truthful fail-closed error. Their absence is not a correctness problem,
+// because every writer of a transient intent also writes the durable publish
+// state alongside it. The list covers every durable base key that flows through
+// the compatibility boundary.
+let project100MvpLegacyAdoptableKeys = null;
+
+function project100MvpLegacyAdoptableKeySet() {
+  if (!project100MvpLegacyAdoptableKeys) {
+    project100MvpLegacyAdoptableKeys = new Set([
+      PROJECT100_MVP_BINDING_KEY,
+      PROJECT100_MVP_BINDING_V2_KEY,
+      PROJECT100_MVP_PUBLISH_STATE_KEY,
+      PROJECT100_MVP_RECOVERY_JOB_KEY
+    ]);
+  }
+  return project100MvpLegacyAdoptableKeys;
+}
+
+// The Project id stamped into a Drive file's appProperties is an external
+// identity contract. A file created before the canonical Project-id extraction
+// still carries the slugged form, so the stamp is compared canonically: a file
+// belonging to this Project matches in either form, and a file stamped for a
+// different Project never matches. Nothing in Drive is rewritten — only the
+// comparison is canonical. This is required for a pre-repair-created Drive file
+// to remain updatable after the Project's storage identity is canonicalized.
+function project100MvpDriveProjectStampMatches(stamp, projectId) {
+  return project100MvpCanonicalScopedProjectId(String(stamp || "")) ===
+    project100MvpCanonicalScopedProjectId(String(projectId || ""));
+}
+
+// A legacy record must prove the requested canonical Project from EVERY Project
+// identity field it carries. A record whose own fields disagree (projectId vs
+// establishment vs establishmentProof vs a URL) is internally inconsistent and
+// is never adopted — the ambiguity is not guessed away.
+// Every canonical Project identity a legacy record carries, from all of its
+// embedded identity fields.
+function project100MvpLegacyRecordProjectIds(record) {
+  if (!record || typeof record !== "object") {
+    return [];
+  }
+  const fields = [];
+  const add = (value) => {
+    const normalized = project100MvpNormalizeProjectId(value);
+    if (normalized) {
+      fields.push(project100MvpCanonicalScopedProjectId(normalized));
+    }
+  };
+  add(record.projectId);
+  const establishment = record.establishment && typeof record.establishment === "object"
+    ? record.establishment
+    : null;
+  add(establishment && establishment.projectId);
+  const proof = establishment && establishment.establishmentProof &&
+    typeof establishment.establishmentProof === "object"
+    ? establishment.establishmentProof
+    : null;
+  add(proof && proof.projectId);
+  for (const field of ["sourcePageUrl", "projectUrl", "captureTabUrl"]) {
+    const segment = project100MvpProjectSegmentOf(record[field]);
+    if (segment) {
+      fields.push(segment);
+    }
+  }
+  return fields;
+}
+
+// Legacy classification. The distinction that matters is not "consistent vs
+// not" but "no legacy state" vs "legacy state that cannot coherently belong to
+// one Project": the latter is evidence that prior state exists, so it must never
+// be silently downgraded to an absent record.
+//
+//   NONE     nothing relevant exists for this Project
+//   VALID    every embedded identity proves the requested Project
+//   FOREIGN  every embedded identity coherently proves one other Project
+//   CONFLICT mixed identities, several foreign Projects, or a scoped key whose
+//            name claims this Project while its record does not prove it
+const PROJECT100_MVP_LEGACY_NONE = "NONE";
+const PROJECT100_MVP_LEGACY_VALID = "VALID";
+const PROJECT100_MVP_LEGACY_FOREIGN = "FOREIGN";
+const PROJECT100_MVP_LEGACY_CONFLICT = "CONFLICT";
+
+function project100MvpClassifyLegacyRecord(record, canonicalProjectId, scopedKeyClaimsProject) {
+  const unresolvable = () => (scopedKeyClaimsProject
+    ? PROJECT100_MVP_LEGACY_CONFLICT
+    : PROJECT100_MVP_LEGACY_NONE);
+  if (!record || typeof record !== "object") {
+    return unresolvable();
+  }
+  const fields = project100MvpLegacyRecordProjectIds(record);
+  if (fields.length === 0) {
+    // No identity evidence at all: never invent ownership.
+    return unresolvable();
+  }
+  const matches = fields.filter((id) => id === canonicalProjectId).length;
+  if (matches === fields.length) {
+    return PROJECT100_MVP_LEGACY_VALID;
+  }
+  if (matches > 0) {
+    // At least one field claims this Project and at least one claims another.
+    return PROJECT100_MVP_LEGACY_CONFLICT;
+  }
+  if (new Set(fields).size > 1) {
+    // Cannot coherently belong to a single Project; do not guess.
+    return PROJECT100_MVP_LEGACY_CONFLICT;
+  }
+  // Coherently another Project. A Project-shaped scoped key that names THIS
+  // Project while its record proves another is a disagreement, not absence.
+  return scopedKeyClaimsProject
+    ? PROJECT100_MVP_LEGACY_CONFLICT
+    : PROJECT100_MVP_LEGACY_FOREIGN;
+}
+
+// A Project whose legacy durable state provably exists but is ambiguous. This
+// is deliberately distinct from BINDING_STATE_UNAVAILABLE ("present but not
+// readable right now") and from an ordinary absent record.
+const PROJECT100_MVP_LEGACY_CONFLICT_ERROR = "LEGACY_PROJECT_STATE_CONFLICT";
+
+function project100MvpIsLegacyProjectStateConflict(error) {
+  return Boolean(error) &&
+    String(error && error.message || "") === PROJECT100_MVP_LEGACY_CONFLICT_ERROR;
+}
+
+// Truthful, non-persisted stand-in state for a conflicted Project. Its only job
+// is to make the popup render a blocked/retry receipt instead of first-publish
+// state D; it invents no bound evidence and is never written to storage.
+function project100MvpConflictPublishState(projectId) {
+  return {
+    projectId: project100MvpNormalizeProjectId(projectId) || "",
+    status: "failed",
+    error: PROJECT100_MVP_LEGACY_CONFLICT_ERROR,
+    driveUpdated: false,
+    driveMutationAccepted: false,
+    artifactScopeIndex: 0,
+    lifecycleState: "UNKNOWN",
+    transaction: "",
+    publishedAt: "",
+    filename: "",
+    driveFileId: "",
+    fileCount: 0,
+    filesSaved: 0,
+    resynced: false,
+    retryable: true,
+    perSource: []
+  };
+}
+
+// Safe one-time adoption of a legacy durable record into the canonical
+// namespace. Both legacy shapes are handled by this one rule:
+//   - the pre-RC-2 unscoped key (passed in as `unscopedValue`), and
+//   - pre-repair slugged scoped keys (`g-p-<id>-<slug>`).
+// The record itself must prove the requested canonical Project; key-name
+// similarity is never sufficient, conflicting candidates fail closed rather
+// than being guessed, and only one distinct candidate may be adopted. Adoption
+// copies — the legacy entry is left untouched for auditability — and the
+// adopted copy is canonicalized so the canonical namespace holds canonical data.
+async function project100MvpAdoptLegacyState(baseKey, canonicalProjectId, unscopedValue) {
+  if (!project100MvpLegacyAdoptableKeySet().has(baseKey)) {
+    // Transient work intent: never resurrected from any legacy namespace. This
+    // is an ordinary absence, not a conflict.
+    return { status: "NONE" };
+  }
+  const candidates = [];
+  const fingerprints = new Set();
+  let conflicted = false;
+  const consider = (value, scopedKeyClaimsProject) => {
+    const classification = project100MvpClassifyLegacyRecord(
+      value, canonicalProjectId, scopedKeyClaimsProject);
+    if (classification === PROJECT100_MVP_LEGACY_CONFLICT) {
+      conflicted = true;
+      return;
+    }
+    if (classification !== PROJECT100_MVP_LEGACY_VALID) {
+      // NONE (nothing to judge) and FOREIGN (coherently another Project) are
+      // both correctly ignored for this Project.
+      return;
+    }
+    const fingerprint = JSON.stringify(value);
+    if (fingerprints.has(fingerprint)) {
+      return;
+    }
+    fingerprints.add(fingerprint);
+    candidates.push(value);
+  };
+  consider(unscopedValue, false);
+  for (const entry of await project100MvpLegacySluggedKeys()) {
+    if (entry.baseKey !== baseKey || entry.canonical !== canonicalProjectId) {
+      continue;
+    }
+    const stored = await chrome.storage.local.get(entry.key);
+    consider(Object.prototype.hasOwnProperty.call(stored, entry.key)
+      ? stored[entry.key]
+      : null, true);
+  }
+  if (candidates.length === 0 && !conflicted) {
+    // No legacy state at all: this is an ordinary "not found".
+    return { status: "NONE" };
+  }
+  if (conflicted || candidates.length > 1) {
+    // Legacy state for this Project provably exists but is ambiguous. That is
+    // NOT the same as "no legacy state": collapsing it into an ordinary null
+    // would let the Project be re-derived as brand new (state D, First Publish,
+    // Drive create, one-time onboarding). Report the conflict explicitly so the
+    // caller can fail closed.
+    return { status: "CONFLICT" };
+  }
+  const adopted = project100MvpCanonicalizeRecordIdentity(candidates[0]);
+  await chrome.storage.local.set({
+    [project100MvpProjectScopedKey(baseKey, canonicalProjectId)]: adopted
+  });
+  return { status: "ADOPTED", value: adopted };
+}
+
 async function project100MvpReadProjectState(baseKey, projectId) {
   const requested = project100MvpNormalizeProjectId(projectId);
   if (!requested) {
@@ -378,19 +711,21 @@ async function project100MvpReadProjectState(baseKey, projectId) {
   if (Object.prototype.hasOwnProperty.call(scoped, scopedKey)) {
     return scoped[scopedKey] || null;
   }
-  // Safe one-time adoption: the old value must carry the exact Project
-  // identity itself. An unknown legacy value is never assigned to the
-  // currently open Project merely because it happens to be open.
+  // Legacy compatibility. Both historical shapes — the pre-RC-2 unscoped key
+  // and the pre-repair slugged scoped key — go through ONE set of safety rules:
+  // durable keys only, positive proof from the record, conflicts fail closed,
+  // and the adopted copy is canonicalized before it is written.
   const legacy = await chrome.storage.local.get(baseKey);
-  if (Object.prototype.hasOwnProperty.call(legacy, baseKey) &&
-      project100MvpRecordProjectId(legacy[baseKey]) === requested) {
-    const value = legacy[baseKey] || null;
-    if (value) {
-      await chrome.storage.local.set({ [scopedKey]: value });
-    }
-    return value;
+  const unscopedValue = Object.prototype.hasOwnProperty.call(legacy, baseKey)
+    ? legacy[baseKey]
+    : null;
+  const adoption = await project100MvpAdoptLegacyState(baseKey, requested, unscopedValue);
+  if (adoption.status === "CONFLICT") {
+    // Provably conflicting legacy state is never "no Project". Every reader must
+    // see this as a fail-closed condition rather than an absent record.
+    throw new Error(PROJECT100_MVP_LEGACY_CONFLICT_ERROR);
   }
-  return null;
+  return adoption.status === "ADOPTED" ? adoption.value : null;
 }
 
 async function project100MvpWriteProjectState(baseKey, value, projectId) {
@@ -922,6 +1257,34 @@ function project100MvpEstablishmentState(binding) {
   return PROJECT100_MVP_ESTABLISHMENT_STATES.has(state) ? state : "UNKNOWN";
 }
 
+// Safety invariant: once a Project carries durable evidence that a Source was
+// really bound (BOUND_UNPROVEN or ESTABLISHED), a missing or unreadable
+// binding record is a state/consistency problem — never a brand-new First
+// Publish. Positive evidence of a *previous* bound lifecycle is read from that
+// Project's own scoped sibling records, so a genuinely new Project (which has
+// none) keeps the normal First Publish path. An unfinished first Add only ever
+// carries INITIALIZING, so it is deliberately not treated as bound evidence.
+const PROJECT100_MVP_BOUND_LIFECYCLE_STATES = new Set([
+  PROJECT100_MVP_BOUND_UNPROVEN_STATE,
+  "ESTABLISHED"
+]);
+
+function project100MvpRecordLifecycleState(record) {
+  if (!record || typeof record !== "object") {
+    return "";
+  }
+  const establishment = record.establishment && typeof record.establishment === "object"
+    ? record.establishment
+    : null;
+  return String((establishment && establishment.state) || record.lifecycleState || "");
+}
+
+function project100MvpHasPriorBoundLifecycle(...records) {
+  return records.some((record) =>
+    PROJECT100_MVP_BOUND_LIFECYCLE_STATES.has(
+      project100MvpRecordLifecycleState(record)));
+}
+
 function project100MvpUniqueExactFilenames(filenames) {
   const values = Array.isArray(filenames)
     ? filenames.map((filename) => String(filename || ""))
@@ -1365,7 +1728,8 @@ async function project100MvpReadSourceFileById(filename, projectId, driveFileId)
     : null;
   if (!appProperties ||
       appProperties[PROJECT100_MVP_SOURCE_MARKER_KEY] !== PROJECT100_MVP_SOURCE_MARKER_VALUE ||
-      String(appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY] || "") !== wantedProjectId) {
+      !project100MvpDriveProjectStampMatches(
+        appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY], wantedProjectId)) {
     throw new Error("DRIVE_SOURCE_IDENTITY_MISMATCH");
   }
   return {
@@ -1629,8 +1993,8 @@ async function project100MvpSearchSourceFiles(filename, projectId) {
     /^[A-Za-z0-9_-]{10,200}$/.test(file.id) &&
     file.name === filename &&
     file.mimeType === "text/markdown" &&
-    String((file.appProperties || {})[PROJECT100_MVP_SOURCE_PROJECT_KEY] || "") ===
-      wantedProjectId);
+    project100MvpDriveProjectStampMatches(
+      (file.appProperties || {})[PROJECT100_MVP_SOURCE_PROJECT_KEY], wantedProjectId));
 }
 
 async function project100MvpReadSourceCreateIntent(projectId = "") {
@@ -2099,8 +2463,8 @@ async function project100MvpAssertSourceDriveIdentity(filename, fileId, projectI
       PROJECT100_MVP_SOURCE_MARKER_VALUE) {
     throw new Error("DRIVE_UPDATE_SOURCE_MARKER_MISMATCH");
   }
-  if (projectId && String(appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY] || "") !==
-      String(projectId)) {
+  if (projectId && !project100MvpDriveProjectStampMatches(
+      appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY], projectId)) {
     throw new Error("DRIVE_UPDATE_PROJECT_MISMATCH");
   }
   return {
@@ -2109,8 +2473,8 @@ async function project100MvpAssertSourceDriveIdentity(filename, fileId, projectI
     notTrashed: true,
     markdown: true,
     sourceMarker: true,
-    projectMarker: !projectId || String(appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY] || "") ===
-      String(projectId)
+    projectMarker: !projectId || project100MvpDriveProjectStampMatches(
+      appProperties[PROJECT100_MVP_SOURCE_PROJECT_KEY], projectId)
   };
 }
 
@@ -3251,9 +3615,11 @@ async function project100MvpClearOnboardingState(projectId = "") {
     PROJECT100_MVP_ONBOARDING_KEY, project100MvpEffectiveProjectId(projectId));
 }
 
-// Deterministic Project identity from a ChatGPT URL. The exact current
-// Project path segment is preserved (same segment class as the production
-// network-observer match pattern — g-p- ids may contain hyphens); no other
+// Deterministic Project identity from a ChatGPT URL. Only the canonical
+// Project id is extracted: ChatGPT can append a human-readable "-<slug>" to
+// the project segment in the path, and the slug is not part of the identity.
+// Including it would namespace one Project under a second key, so the same
+// Project would be read under a different key than it was written. No other
 // Project is ever guessed.
 function project100MvpProjectSegmentOf(urlString) {
   try {
@@ -3261,7 +3627,7 @@ function project100MvpProjectSegmentOf(urlString) {
     if (url.hostname !== "chatgpt.com" && url.hostname !== "chat.openai.com") {
       return "";
     }
-    const match = url.pathname.match(/\/g\/(g-p-[A-Za-z0-9-]+)(?:\/|$|\?)/);
+    const match = url.pathname.match(/\/g\/(g-p-[A-Za-z0-9]+)/);
     return match ? match[1] : "";
   } catch (_error) {
     return "";
@@ -5260,6 +5626,20 @@ async function project100MvpRunPublish(options = {}) {
     if (!binding ||
         (lifecycleState === "INITIALIZING" &&
           (!project100MvpBindingV2Complete(binding) || !binding.sourcePageUrl))) {
+      // Safety invariant: a Project that already proved a bound lifecycle must
+      // never be restarted as a brand-new First Publish just because its
+      // binding record is currently missing or incomplete. Fail closed without
+      // writing anything, so the existing Drive/Source identity stays intact
+      // and a later read (Rescan/retry) can still recover it.
+      if (project100MvpHasPriorBoundLifecycle(
+        previousPublishState, previousRecoveryJob, pendingIntent)) {
+        project100MvpPublishRunning = false;
+        return {
+          status: "BLOCKED",
+          error: "BINDING_STATE_UNAVAILABLE",
+          publishState: previousPublishState || null
+        };
+      }
       const onboardingResult = await project100MvpRunFirstPublish(
         captureTab,
         captureTabUrl,
@@ -5870,6 +6250,21 @@ async function project100MvpRunPublish(options = {}) {
       });
     return { status: "PASS", publishState: syncingState };
   } catch (error) {
+    if (project100MvpIsLegacyProjectStateConflict(error)) {
+      // A provably ambiguous legacy namespace must never be persisted as an
+      // ordinary failed canonical state: that write would mask the conflict on
+      // the next attempt (the canonical publish-state read would succeed, and
+      // the Project could then fall into First Publish). Write nothing at all and
+      // report the conflict instead, so every later attempt - a second Publish,
+      // a popup reopen, a Rescan, a worker restart - sees the same conflict from
+      // the original conflicting legacy records, which remain the durable truth.
+      project100MvpPublishRunning = false;
+      return {
+        status: "BLOCKED",
+        error: PROJECT100_MVP_LEGACY_CONFLICT_ERROR,
+        publishState: project100MvpConflictPublishState(project100MvpActiveProjectId)
+      };
+    }
     const errorCode = project100MvpSafeError(error);
     // A new job may fail before it reaches the batch finalizer (for example
     // during discovery or first-use preflight). Close only the job created by
@@ -7134,7 +7529,13 @@ function project100MvpOperation(message, sender) {
   }
   if (message.type === "PROJECT100_MVP_GET_BINDING") {
     return project100MvpReadBindingV2(messageProjectId)
-      .then((binding) => ({ status: "PASS", binding }));
+      .then((binding) => ({ status: "PASS", binding }))
+      .catch((error) => {
+        if (!project100MvpIsLegacyProjectStateConflict(error)) {
+          throw error;
+        }
+        return { status: "PASS", binding: null, conflict: true };
+      });
   }
   if (message.type === "PROJECT100_MVP_SET_SOURCE_BINDING") {
     return project100MvpSetSourceBinding({ ...message, projectId: messageProjectId });
@@ -7144,7 +7545,19 @@ function project100MvpOperation(message, sender) {
   }
   if (message.type === "PROJECT100_MVP_GET_PUBLISH_STATE") {
     return project100MvpReadPublishState(messageProjectId)
-      .then((publishState) => ({ status: "PASS", publishState }));
+      .then((publishState) => ({ status: "PASS", publishState }))
+      .catch((error) => {
+        if (!project100MvpIsLegacyProjectStateConflict(error)) {
+          throw error;
+        }
+        // A conflicted Project reads as a truthful blocked receipt, never as an
+        // absent record (which the popup would render as first-publish state D).
+        return {
+          status: "PASS",
+          publishState: project100MvpConflictPublishState(messageProjectId),
+          conflict: true
+        };
+      });
   }
   if (message.type === "PROJECT100_MVP_GET_ONBOARDING") {
     return project100MvpReadOnboardingState(messageProjectId)

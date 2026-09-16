@@ -1001,7 +1001,9 @@
   function project100PageStatusSnapshot() {
     let projectSegment = "";
     try {
-      const match = window.location.pathname.match(/\/g\/(g-p-[A-Za-z0-9-]+)(?:\/|$|\?)/);
+      // Canonical Project id only: a trailing "-<slug>" is a display suffix,
+      // not part of the identity (matches popup.js and the service worker).
+      const match = window.location.pathname.match(/\/g\/(g-p-[A-Za-z0-9]+)/);
       projectSegment = match ? match[1] : "";
     } catch (_error) {
       projectSegment = "";
