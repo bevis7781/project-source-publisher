@@ -12,7 +12,7 @@ A browser extension that takes Markdown files generated in your Project conversa
 
 ## Availability
 
-**v0.3.1 · GitHub public beta · Edge Add-ons submission in review**
+**v0.3.3 · GitHub public beta · Edge Add-ons update pending submission/review**
 
 The source code is public. The Edge package has passed package verification and has been submitted for review; this is not store approval. The listing is not live, so there is **no supported public install link yet**. Testing of the store-installed extension is still pending.
 
